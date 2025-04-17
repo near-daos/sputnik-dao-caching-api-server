@@ -2542,6 +2542,7 @@ name = "sputnik-indexer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "borsh",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",

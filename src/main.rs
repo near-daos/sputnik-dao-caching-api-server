@@ -14,17 +14,22 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use scraper::{Proposal, ProposalStatus, fetch_policy, fetch_proposal, fetch_proposals};
+use scraper::{
+    Proposal, ProposalStatus, StateVersion, fetch_contract_version, fetch_policy, fetch_proposal,
+    fetch_proposals,
+};
 
 struct CachedProposals {
     proposals: Vec<Proposal>,
     policy: scraper::Policy,
     last_updated: Instant,
+    version: StateVersion,
 }
 
 struct CachedProposal {
     proposal: Proposal,
     last_updated: Instant,
+    version: StateVersion,
 }
 
 type ProposalStore = Arc<RwLock<HashMap<String, CachedProposals>>>;
@@ -50,7 +55,6 @@ async fn get_dao_proposals(
     sort_direction: Option<String>,
     store: &State<ProposalStore>,
 ) -> Json<Vec<Proposal>> {
-    let dao_id_str = dao_id.clone();
     let dao_id: AccountId = dao_id.parse().unwrap();
 
     // Check if we have a fresh cache entry
@@ -58,8 +62,8 @@ async fn get_dao_proposals(
         let store_read = store
             .read()
             .expect("Failed to acquire read lock on proposal store");
-        !store_read.contains_key(&dao_id_str)
-            || store_read.get(&dao_id_str).map_or(true, |cached| {
+        !store_read.contains_key(dao_id.as_str())
+            || store_read.get(dao_id.as_str()).map_or(true, |cached| {
                 cached.last_updated.elapsed() > Duration::from_secs(5)
             })
     };
@@ -69,17 +73,18 @@ async fn get_dao_proposals(
         let client = rpc_client::get_rpc_client();
         let proposal_outputs = fetch_proposals(&client, &dao_id).await.unwrap();
         let policy = fetch_policy(&client, &dao_id).await.unwrap();
-
+        let version = fetch_contract_version(&client, &dao_id).await.unwrap();
         // Update the cache
         let mut store_write = store
             .write()
             .expect("Failed to acquire write lock on proposal store");
         store_write.insert(
-            dao_id_str.clone(),
+            dao_id.to_string(),
             CachedProposals {
                 proposals: proposal_outputs,
                 policy,
                 last_updated: Instant::now(),
+                version,
             },
         );
     }
@@ -90,7 +95,7 @@ async fn get_dao_proposals(
             .read()
             .expect("Failed to acquire read lock on proposal store");
         let cached = store_read
-            .get(&dao_id_str)
+            .get(dao_id.as_str())
             .expect("Cache entry should exist");
         (cached.proposals.clone(), cached.policy.clone())
     };
@@ -132,8 +137,8 @@ async fn get_dao_proposals(
             let votes_match = min_votes
                 .map(|min| proposal.votes.len() >= min)
                 .unwrap_or(true);
-            true
-            // status_match && keyword_match && proposer_match && proposal_type_match && votes_match
+
+            status_match && keyword_match && proposer_match && proposal_type_match && votes_match
         })
         .collect::<Vec<_>>();
 
@@ -173,12 +178,10 @@ async fn get_dao_proposals(
 async fn get_specific_proposal(
     dao_id: String,
     proposal_id: u64,
-    store: &State<ProposalStore>,
     cache: &State<ProposalCache>,
 ) -> Result<Json<Proposal>, Status> {
-    let cache_key = (dao_id.clone(), proposal_id);
-
     // Check if we have a fresh cache entry for this specific proposal
+    let cache_key = (dao_id.clone(), proposal_id);
     {
         let cache_read = cache
             .read()
@@ -188,32 +191,34 @@ async fn get_specific_proposal(
             if cached.last_updated.elapsed() <= Duration::from_secs(5) {
                 return Ok(Json(cached.proposal.clone()));
             }
-        }
+        };
     }
 
+    // If we didn't return early, we need to fetch the proposal
     let client = rpc_client::get_rpc_client();
     let dao_id_account: AccountId = dao_id.parse().unwrap();
 
-    // Use fetch_proposal to get just the one proposal we need
-    match fetch_proposal(&client, &dao_id_account, proposal_id).await {
-        Ok(proposal) => {
-            // Update the proposal cache
-            let mut cache_write = cache
-                .write()
-                .expect("Failed to acquire write lock on proposal cache");
+    let proposal = fetch_proposal(&client, &dao_id_account, proposal_id)
+        .await
+        .unwrap();
+    let version = fetch_contract_version(&client, &dao_id_account)
+        .await
+        .unwrap();
 
-            cache_write.insert(
-                cache_key,
-                CachedProposal {
-                    proposal: proposal.clone(),
-                    last_updated: Instant::now(),
-                },
-            );
+    let mut cache_write = cache
+        .write()
+        .expect("Failed to acquire write lock on proposal cache");
 
-            Ok(Json(proposal))
-        }
-        Err(_) => Err(Status::NotFound),
-    }
+    cache_write.insert(
+        cache_key,
+        CachedProposal {
+            proposal: proposal.clone(),
+            last_updated: Instant::now(),
+            version,
+        },
+    );
+
+    return Ok(Json(proposal));
 }
 
 #[launch]

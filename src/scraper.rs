@@ -9,6 +9,8 @@ use rocket::serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
+use borsh::BorshDeserialize;
+
 use rocket::form::FromFormField;
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
@@ -32,6 +34,12 @@ pub enum ProposalStatus {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProposalLog {
     pub block_height: U64,
+}
+
+#[derive(BorshDeserialize, Debug)]
+pub enum StateVersion {
+    V1,
+    V2,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -168,5 +176,36 @@ pub async fn fetch_policy(client: &JsonRpcClient, dao_id: &AccountId) -> anyhow:
         Ok(policy)
     } else {
         Err(anyhow::anyhow!("Failed to get policy"))
+    }
+}
+
+pub async fn fetch_contract_version(
+    client: &JsonRpcClient,
+    dao_id: &AccountId,
+) -> anyhow::Result<StateVersion> {
+    let request = methods::query::RpcQueryRequest {
+        block_reference: near_primitives::types::Finality::Final.into(),
+        request: QueryRequest::ViewState {
+            account_id: dao_id.clone(),
+            prefix: "STATEVERSION".as_bytes().to_vec().into(),
+            include_proof: false,
+        },
+    };
+
+    let response = client.call(request).await;
+    match response {
+        Ok(result) => {
+            if let QueryResponseKind::ViewState(call_result) = result.kind {
+                if let Some(value) = call_result.values.get(0) {
+                    let version = StateVersion::try_from_slice(&value.value)?;
+                    Ok(version)
+                } else {
+                    Ok(StateVersion::V1)
+                }
+            } else {
+                Err(anyhow::anyhow!("Failed to get contract version"))
+            }
+        }
+        Err(_) => Ok(StateVersion::V1), // If the call fails, version is V1
     }
 }

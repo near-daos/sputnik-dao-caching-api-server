@@ -15,8 +15,3 @@ pub fn get_rpc_client() -> Arc<JsonRpcClient> {
         })
         .clone()
 }
-
-/// Creates a new RPC client with a custom URL
-pub fn create_rpc_client(url: &str) -> JsonRpcClient {
-    JsonRpcClient::connect(url)
-}
