@@ -1,0 +1,172 @@
+use anyhow::Result;
+use near_jsonrpc_client::{JsonRpcClient, methods};
+use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::types::AccountId;
+
+use near_primitives::{types::FunctionArgs, views::QueryRequest};
+use near_sdk::json_types::U64;
+use rocket::serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+
+use rocket::form::FromFormField;
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub enum Vote {
+    Approve,
+    Reject,
+    Remove,
+}
+
+#[derive(FromFormField, Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub enum ProposalStatus {
+    InProgress,
+    Approved,
+    Rejected,
+    Removed,
+    Expired,
+    Moved,
+    Failed,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProposalLog {
+    pub block_height: U64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Proposal {
+    pub id: u64,
+    pub proposer: String,
+    pub description: String,
+    pub kind: Value,
+    pub status: ProposalStatus,
+    pub vote_counts: HashMap<String, [String; 3]>,
+    pub votes: HashMap<String, Vote>,
+    pub submission_time: U64,
+    pub last_actions_log: Option<Vec<ProposalLog>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Policy {
+    pub roles: Vec<Value>,
+    pub default_vote_policy: Value,
+    pub proposal_bond: String, // u128
+    pub proposal_period: U64,
+    pub bounty_bond: String, //u128
+    pub bounty_forgiveness_period: U64,
+}
+
+const PROPOSAL_LIMIT: u64 = 500;
+
+pub async fn fetch_proposals(
+    client: &JsonRpcClient,
+    dao_id: &AccountId,
+) -> anyhow::Result<Vec<Proposal>> {
+    // Get the last proposal ID
+    let last_id_request = methods::query::RpcQueryRequest {
+        block_reference: near_primitives::types::Finality::Final.into(),
+        request: QueryRequest::CallFunction {
+            account_id: dao_id.clone(),
+            method_name: "get_last_proposal_id".to_string(),
+            args: FunctionArgs::from(vec![]),
+        },
+    };
+
+    let last_id_response = client.call(last_id_request).await?;
+    let last_id = if let QueryResponseKind::CallResult(result) = last_id_response.kind {
+        serde_json::from_slice::<u64>(&result.result)?
+    } else {
+        return Err(anyhow::anyhow!("Failed to get last proposal ID"));
+    };
+    println!("Last proposal ID: {}", last_id);
+
+    let mut all_proposals = Vec::new();
+    let mut current_index = 0;
+
+    // Fetch proposals in batches
+    while current_index < last_id {
+        let limit = std::cmp::min(PROPOSAL_LIMIT, last_id - current_index);
+
+        let query_args = FunctionArgs::from(
+            json!({
+                "from_index": current_index,
+                "limit": limit
+            })
+            .to_string()
+            .into_bytes(),
+        );
+        let request = methods::query::RpcQueryRequest {
+            block_reference: near_primitives::types::Finality::Final.into(),
+            request: QueryRequest::CallFunction {
+                account_id: dao_id.clone(),
+                method_name: "get_proposals".to_string(),
+                args: query_args,
+            },
+        };
+
+        let response = client.call(request).await?;
+        if let QueryResponseKind::CallResult(result) = response.kind {
+            let proposals_batch: Vec<Proposal> = serde_json::from_slice(&result.result)?;
+            all_proposals.extend(proposals_batch);
+            current_index += limit;
+        } else {
+            return Err(anyhow::anyhow!(
+                "Unexpected response kind while fetching proposals batch starting at index {}",
+                current_index
+            ));
+        }
+        // Add a small delay to avoid hitting rate limits
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    Ok(all_proposals)
+}
+
+pub async fn fetch_proposal(
+    client: &JsonRpcClient,
+    dao_id: &AccountId,
+    proposal_id: u64,
+) -> anyhow::Result<Proposal> {
+    let query_args = FunctionArgs::from(
+        json!({
+            "id": proposal_id,
+        })
+        .to_string()
+        .into_bytes(),
+    );
+    let request = methods::query::RpcQueryRequest {
+        block_reference: near_primitives::types::Finality::Final.into(),
+        request: QueryRequest::CallFunction {
+            account_id: dao_id.clone(),
+            method_name: "get_proposal".to_string(),
+            args: query_args,
+        },
+    };
+    let response = client.call(request).await?;
+    if let QueryResponseKind::CallResult(result) = response.kind {
+        let proposal: Proposal = serde_json::from_slice(&result.result)?;
+        Ok(proposal)
+    } else {
+        Err(anyhow::anyhow!("Failed to get proposal"))
+    }
+}
+pub async fn fetch_policy(client: &JsonRpcClient, dao_id: &AccountId) -> anyhow::Result<Policy> {
+    let request = methods::query::RpcQueryRequest {
+        block_reference: near_primitives::types::Finality::Final.into(),
+        request: QueryRequest::CallFunction {
+            account_id: dao_id.clone(),
+            method_name: "get_policy".to_string(),
+            args: FunctionArgs::from(vec![]),
+        },
+    };
+
+    let response = client.call(request).await?;
+
+    if let QueryResponseKind::CallResult(result) = response.kind {
+        let policy: Policy = serde_json::from_slice(&result.result)?;
+        Ok(policy)
+    } else {
+        Err(anyhow::anyhow!("Failed to get policy"))
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "sputnik-indexer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde_json = "1.0"
+anyhow = "1.0.98"
+serde = { version = "1.0", features = ["derive"] }
+rocket = { version = "0.5.1", features = ["json"] }
+near-jsonrpc-client = "0.16.1"
+near-jsonrpc-primitives = "0.29.2"
+near-primitives = "0.29.2"
+near-sdk = "5.12.0"
+tokio = "1.44.2"
