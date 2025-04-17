@@ -31,12 +31,23 @@ pub enum ProposalStatus {
     Failed,
 }
 
+// #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+// pub enum Action {
+//     AddProposal,
+//     RemoveProposal,
+//     VoteApprove,
+//     VoteReject,
+//     VoteRemove,
+//     Finalize,
+//     MoveToHub,
+// }
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ProposalLog {
     pub block_height: U64,
 }
 
-#[derive(BorshDeserialize, Debug)]
+#[derive(BorshDeserialize, Clone, Debug)]
 pub enum StateVersion {
     V1,
     V2,
@@ -65,6 +76,14 @@ pub struct Policy {
     pub bounty_forgiveness_period: U64,
 }
 
+// #[derive(Serialize, Deserialize, Clone, Debug)]
+// pub struct ActionLog {
+//     pub account_id: AccountId,
+//     pub proposal_id: U64,
+//     pub action: Action,
+//     pub block_height: U64,
+// }
+
 const PROPOSAL_LIMIT: u64 = 500;
 
 pub async fn fetch_proposals(
@@ -87,7 +106,6 @@ pub async fn fetch_proposals(
     } else {
         return Err(anyhow::anyhow!("Failed to get last proposal ID"));
     };
-    println!("Last proposal ID: {}", last_id);
 
     let mut all_proposals = Vec::new();
     let mut current_index = 0;
@@ -209,3 +227,31 @@ pub async fn fetch_contract_version(
         Err(_) => Ok(StateVersion::V1), // If the call fails, version is V1
     }
 }
+
+// pub async fn fetch_actions_log(
+//     client: &JsonRpcClient,
+//     dao_id: &AccountId,
+// ) -> Option<Vec<ActionLog>> {
+//     let request = methods::query::RpcQueryRequest {
+//         block_reference: near_primitives::types::Finality::Final.into(),
+//         request: QueryRequest::CallFunction {
+//             account_id: dao_id.clone(),
+//             method_name: "get_actions_log".to_string(),
+//             args: FunctionArgs::from(vec![]),
+//         },
+//     };
+
+//     match client.call(request).await {
+//         Ok(response) => {
+//             if let QueryResponseKind::CallResult(result) = response.kind {
+//                 match serde_json::from_slice::<Vec<ActionLog>>(&result.result) {
+//                     Ok(actions_log) => Some(actions_log),
+//                     Err(_) => None,
+//                 }
+//             } else {
+//                 None
+//             }
+//         },
+//         Err(_) => None,
+//     }
+// }
