@@ -3,11 +3,11 @@ extern crate rocket;
 mod rpc_client;
 mod scraper;
 
-use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use rocket::State;
 use rocket::form::{FromForm, FromFormField};
 use rocket::http::Status;
+use rocket::serde::Serialize;
 use rocket::serde::json::Json;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use tokio;
 
 use scraper::{
-    Policy, Proposal, ProposalStatus, StateVersion, fetch_contract_version, fetch_policy,
-    fetch_proposal, fetch_proposals,
+    Policy, Proposal, ProposalStatus, StateVersion, TxMetadata, fetch_contract_version,
+    fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
 };
 
 #[derive(Clone)]
@@ -28,10 +28,18 @@ struct CachedProposals {
     version: StateVersion,
 }
 
+#[derive(Serialize, Debug)]
+struct ProposalOutput {
+    #[serde(flatten)]
+    proposal: Proposal,
+    txs_log: Vec<TxMetadata>,
+}
+
+#[derive(Clone)]
 struct CachedProposal {
     proposal: Proposal,
     last_updated: Instant,
-    version: StateVersion,
+    txs_log: Vec<TxMetadata>,
 }
 
 type ProposalStore = Arc<RwLock<HashMap<String, CachedProposals>>>;
@@ -124,6 +132,7 @@ impl ProposalFilters {
                         ordering.reverse()
                     }
                 }),
+                // TODO: probably the same thing, remove?
                 SortBy::ExpiryTime => filtered_proposals.sort_by(|a, b| {
                     let ordering = (a.submission_time.0 + policy.proposal_period.0)
                         .cmp(&(b.submission_time.0 + policy.proposal_period.0));
@@ -182,27 +191,39 @@ async fn get_latest_proposal_cache(
     cache: &ProposalCache,
     dao_id: &AccountId,
     proposal_id: u64,
-) -> Proposal {
+) -> ProposalOutput {
     let cache_key = (dao_id.to_string(), proposal_id);
-    {
+    let last_cached_proposal: Option<CachedProposal> = {
         let cache_read = cache
             .read()
             .expect("Failed to acquire read lock on proposal cache");
 
         if let Some(cached) = cache_read.get(&cache_key) {
             if cached.last_updated.elapsed() <= Duration::from_secs(5) {
-                return cached.proposal.clone();
+                return ProposalOutput {
+                    proposal: cached.proposal.clone(),
+                    txs_log: cached.txs_log.clone(),
+                };
             }
+            Some(cached.clone())
+        } else {
+            None
         }
-    }
+    };
 
     // Fetch proposal and version in parallel
     let client = rpc_client::get_rpc_client();
-    let (proposal, version) = tokio::try_join!(
+    let block_height_limit = last_cached_proposal
+        .as_ref()
+        .map_or(0, |c| c.txs_log.last().unwrap().2);
+    let (proposal, txs_log) = tokio::try_join!(
         fetch_proposal(&client, &dao_id, proposal_id),
-        fetch_contract_version(&client, &dao_id)
+        fetch_proposal_log_txs(&client, dao_id, proposal_id, block_height_limit)
     )
     .unwrap();
+
+    let txs_log =
+        last_cached_proposal.map_or(txs_log.clone(), |c| [&c.txs_log[..], &txs_log[..]].concat());
 
     // Update the cache
     let mut cache_write = cache
@@ -214,11 +235,11 @@ async fn get_latest_proposal_cache(
         CachedProposal {
             proposal: proposal.clone(),
             last_updated: Instant::now(),
-            version,
+            txs_log: txs_log.clone(),
         },
     );
 
-    proposal
+    ProposalOutput { proposal, txs_log }
 }
 
 #[get("/proposals/<dao_id>?<filters..>")]
@@ -230,9 +251,7 @@ async fn get_dao_proposals(
     let dao_id: AccountId = dao_id.parse().unwrap();
 
     let cached = get_latest_dao_cache(&store, &dao_id).await;
-    let (proposals, policy) = (cached.proposals, cached.policy);
-
-    let filtered_proposals = filters.filter_proposals(proposals, &policy);
+    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
     Json(filtered_proposals)
 }
 
@@ -241,7 +260,7 @@ async fn get_specific_proposal(
     dao_id: String,
     proposal_id: u64,
     cache: &State<ProposalCache>,
-) -> Result<Json<Proposal>, Status> {
+) -> Result<Json<ProposalOutput>, Status> {
     let dao_id_account: AccountId = dao_id.parse().unwrap();
     let proposal = get_latest_proposal_cache(cache, &dao_id_account, proposal_id).await;
     Ok(Json(proposal))

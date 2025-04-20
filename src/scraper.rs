@@ -1,10 +1,14 @@
 use anyhow::Result;
 use near_jsonrpc_client::{JsonRpcClient, methods};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::hash::CryptoHash;
 use near_primitives::types::AccountId;
 
 use near_primitives::{types::FunctionArgs, views::QueryRequest};
+use near_sdk::BlockHeight;
+use near_sdk::env::block_height;
 use near_sdk::json_types::U64;
+use rocket::futures::future::try_join_all;
 use rocket::serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -12,6 +16,11 @@ use std::collections::HashMap;
 use borsh::BorshDeserialize;
 
 use rocket::form::FromFormField;
+
+pub type TxMetadata = (AccountId, CryptoHash, BlockHeight, u64);
+
+const PROPOSAL_LIMIT: u64 = 500;
+const LOG_LIMIT: usize = 20;
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub enum Vote {
@@ -31,18 +40,18 @@ pub enum ProposalStatus {
     Failed,
 }
 
-// #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-// pub enum Action {
-//     AddProposal,
-//     RemoveProposal,
-//     VoteApprove,
-//     VoteReject,
-//     VoteRemove,
-//     Finalize,
-//     MoveToHub,
-// }
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub enum Action {
+    AddProposal,
+    RemoveProposal,
+    VoteApprove,
+    VoteReject,
+    VoteRemove,
+    Finalize,
+    MoveToHub,
+}
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct ProposalLog {
     pub block_height: U64,
 }
@@ -76,15 +85,13 @@ pub struct Policy {
     pub bounty_forgiveness_period: U64,
 }
 
-// #[derive(Serialize, Deserialize, Clone, Debug)]
-// pub struct ActionLog {
-//     pub account_id: AccountId,
-//     pub proposal_id: U64,
-//     pub action: Action,
-//     pub block_height: U64,
-// }
-
-const PROPOSAL_LIMIT: u64 = 500;
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ActionLog {
+    pub account_id: AccountId,
+    pub proposal_id: U64,
+    pub action: Action,
+    pub block_height: U64,
+}
 
 pub async fn fetch_proposals(
     client: &JsonRpcClient,
@@ -177,6 +184,90 @@ pub async fn fetch_proposal(
         Err(anyhow::anyhow!("Failed to get proposal"))
     }
 }
+
+pub async fn fetch_proposal_at_block(
+    client: &JsonRpcClient,
+    dao_id: &AccountId,
+    proposal_id: u64,
+    block_height: u64,
+) -> anyhow::Result<Proposal> {
+    let query_args = FunctionArgs::from(
+        json!({
+            "id": proposal_id,
+        })
+        .to_string()
+        .into_bytes(),
+    );
+    let request = methods::query::RpcQueryRequest {
+        block_reference: near_primitives::types::BlockReference::BlockId(
+            near_primitives::types::BlockId::Height(block_height),
+        ),
+        request: QueryRequest::CallFunction {
+            account_id: dao_id.clone(),
+            method_name: "get_proposal".to_string(),
+            args: query_args,
+        },
+    };
+    let response = client.call(request).await?;
+    if let QueryResponseKind::CallResult(result) = response.kind {
+        let proposal: Proposal = serde_json::from_slice(&result.result)?;
+        Ok(proposal)
+    } else {
+        Err(anyhow::anyhow!(
+            "Failed to get proposal at block {}",
+            block_height
+        ))
+    }
+}
+
+pub async fn fetch_proposal_log_txs(
+    client: &JsonRpcClient,
+    dao_id: &AccountId,
+    proposal_id: u64,
+    block_height_limit: u64,
+) -> anyhow::Result<Vec<TxMetadata>> {
+    let proposal = fetch_proposal(client, dao_id, proposal_id).await?;
+    if proposal.last_actions_log.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let mut earliest_log = proposal.last_actions_log.unwrap();
+    let mut complete_log = Vec::new();
+
+    while earliest_log.len() == LOG_LIMIT {
+        let earliest_block_height = earliest_log.first().unwrap().block_height.0;
+        // When the blocks are too deep - break
+        if earliest_block_height < block_height_limit {
+            break;
+        }
+        // Extends in a wrong order
+        complete_log.extend(earliest_log);
+        let earlier_block_height = earliest_block_height - 1;
+        earliest_log = fetch_proposal_at_block(client, dao_id, proposal_id, earlier_block_height)
+            .await
+            .unwrap()
+            .last_actions_log
+            .unwrap();
+    }
+    let earliest_log: Vec<ProposalLog> = earliest_log
+        .iter()
+        .filter(|log| log.block_height.0 > block_height_limit)
+        .cloned()
+        .collect();
+    complete_log.extend(earliest_log);
+    // Sort is required because of extend in a wrong order
+    complete_log.sort_by_key(|l| l.block_height.0);
+    complete_log.dedup();
+
+    let futures = complete_log
+        .iter()
+        .map(|l| l.block_height.0)
+        .map(|block_number| fetch_proposal_txs_in_block(client, dao_id, proposal_id, block_number));
+    let res = try_join_all(futures).await?.into_iter().flatten().collect();
+
+    Ok(res)
+}
+
 pub async fn fetch_policy(client: &JsonRpcClient, dao_id: &AccountId) -> anyhow::Result<Policy> {
     let request = methods::query::RpcQueryRequest {
         block_reference: near_primitives::types::Finality::Final.into(),
@@ -228,30 +319,94 @@ pub async fn fetch_contract_version(
     }
 }
 
-// pub async fn fetch_actions_log(
-//     client: &JsonRpcClient,
-//     dao_id: &AccountId,
-// ) -> Option<Vec<ActionLog>> {
-//     let request = methods::query::RpcQueryRequest {
-//         block_reference: near_primitives::types::Finality::Final.into(),
-//         request: QueryRequest::CallFunction {
-//             account_id: dao_id.clone(),
-//             method_name: "get_actions_log".to_string(),
-//             args: FunctionArgs::from(vec![]),
-//         },
-//     };
+pub async fn fetch_actions_log(
+    client: &JsonRpcClient,
+    dao_id: &AccountId,
+) -> Option<Vec<ActionLog>> {
+    let request = methods::query::RpcQueryRequest {
+        block_reference: near_primitives::types::Finality::Final.into(),
+        request: QueryRequest::CallFunction {
+            account_id: dao_id.clone(),
+            method_name: "get_actions_log".to_string(),
+            args: FunctionArgs::from(vec![]),
+        },
+    };
 
-//     match client.call(request).await {
-//         Ok(response) => {
-//             if let QueryResponseKind::CallResult(result) = response.kind {
-//                 match serde_json::from_slice::<Vec<ActionLog>>(&result.result) {
-//                     Ok(actions_log) => Some(actions_log),
-//                     Err(_) => None,
-//                 }
-//             } else {
-//                 None
-//             }
-//         },
-//         Err(_) => None,
-//     }
-// }
+    match client.call(request).await {
+        Ok(response) => {
+            if let QueryResponseKind::CallResult(result) = response.kind {
+                match serde_json::from_slice::<Vec<ActionLog>>(&result.result) {
+                    Ok(actions_log) => Some(actions_log),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+pub async fn fetch_proposal_txs_in_block(
+    client: &JsonRpcClient,
+    dao_id: &AccountId,
+    proposal_id: u64,
+    block_height: u64,
+) -> Result<Vec<TxMetadata>> {
+    // Fetch the block by height
+    let block_request = methods::block::RpcBlockRequest {
+        block_reference: near_primitives::types::BlockReference::BlockId(
+            near_primitives::types::BlockId::Height(block_height),
+        ),
+    };
+
+    let block_response = client.call(block_request).await?;
+    let chunks = block_response.chunks;
+    let timestamp = block_response.header.timestamp;
+
+    let mut proposal_txs = Vec::new();
+
+    // TODO: optmisize checks fetching in async
+    for chunk_header in chunks {
+        let chunk_request = methods::chunk::RpcChunkRequest {
+            chunk_reference: methods::chunk::ChunkReference::ChunkHash {
+                chunk_id: chunk_header.chunk_hash,
+            },
+        };
+
+        let chunk = client.call(chunk_request).await?;
+
+        for tx in &chunk.transactions {
+            if &tx.receiver_id == dao_id {
+                for action in &tx.actions {
+                    if let near_primitives::views::ActionView::FunctionCall {
+                        method_name,
+                        args,
+                        ..
+                    } = action
+                    {
+                        if method_name == "act_proposal" {
+                            let args_value = serde_json::from_slice::<Value>(&args)
+                                .expect("Couldn'e deserialize args.");
+                            let id = args_value
+                                .get("id")
+                                .expect("No id in args.")
+                                .as_u64()
+                                .unwrap();
+                            if proposal_id == id {
+                                proposal_txs.push((
+                                    tx.signer_id.clone(),
+                                    tx.hash,
+                                    block_height,
+                                    timestamp,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(proposal_txs)
+}
