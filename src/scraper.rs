@@ -6,7 +6,6 @@ use near_primitives::types::AccountId;
 
 use near_primitives::{types::FunctionArgs, views::QueryRequest};
 use near_sdk::BlockHeight;
-use near_sdk::env::block_height;
 use near_sdk::json_types::U64;
 use rocket::futures::future::try_join_all;
 use rocket::serde::{Deserialize, Serialize};
@@ -353,29 +352,28 @@ pub async fn fetch_proposal_txs_in_block(
     proposal_id: u64,
     block_height: u64,
 ) -> Result<Vec<TxMetadata>> {
-    // Fetch the block by height
     let block_request = methods::block::RpcBlockRequest {
         block_reference: near_primitives::types::BlockReference::BlockId(
             near_primitives::types::BlockId::Height(block_height),
         ),
     };
-
     let block_response = client.call(block_request).await?;
-    let chunks = block_response.chunks;
+
+    let chunks_views = block_response.chunks;
     let timestamp = block_response.header.timestamp;
 
-    let mut proposal_txs = Vec::new();
-
-    // TODO: optmisize checks fetching in async
-    for chunk_header in chunks {
+    let chunk_futures = chunks_views.iter().map(|chunk_header| {
         let chunk_request = methods::chunk::RpcChunkRequest {
             chunk_reference: methods::chunk::ChunkReference::ChunkHash {
                 chunk_id: chunk_header.chunk_hash,
             },
         };
+        client.call(chunk_request)
+    });
+    let chunk_results = try_join_all(chunk_futures).await?;
 
-        let chunk = client.call(chunk_request).await?;
-
+    let mut proposal_txs = Vec::new();
+    for chunk in chunk_results {
         for tx in &chunk.transactions {
             if &tx.receiver_id == dao_id {
                 for action in &tx.actions {
