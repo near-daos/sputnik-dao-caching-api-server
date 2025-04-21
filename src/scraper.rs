@@ -4,6 +4,7 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::hash::CryptoHash;
 use near_primitives::types::AccountId;
 
+use near_primitives::views::{ActionView, ReceiptEnumView};
 use near_primitives::{types::FunctionArgs, views::QueryRequest};
 use near_sdk::BlockHeight;
 use near_sdk::json_types::U64;
@@ -16,7 +17,14 @@ use borsh::BorshDeserialize;
 
 use rocket::form::FromFormField;
 
-pub type TxMetadata = (AccountId, CryptoHash, BlockHeight, u64);
+#[derive(Serialize, Clone, Debug)]
+pub struct TxMetadata {
+    pub signer_id: AccountId,
+    pub predecessor_id: AccountId,
+    pub reciept_hash: CryptoHash,
+    pub block_height: BlockHeight,
+    pub timestamp: u64,
+}
 
 const PROPOSAL_LIMIT: u64 = 500;
 const LOG_LIMIT: usize = 20;
@@ -243,8 +251,7 @@ pub async fn fetch_proposal_log_txs(
         complete_log.extend(earliest_log);
         let earlier_block_height = earliest_block_height - 1;
         earliest_log = fetch_proposal_at_block(client, dao_id, proposal_id, earlier_block_height)
-            .await
-            .unwrap()
+            .await?
             .last_actions_log
             .unwrap();
     }
@@ -374,30 +381,45 @@ pub async fn fetch_proposal_txs_in_block(
 
     let mut proposal_txs = Vec::new();
     for chunk in chunk_results {
-        for tx in &chunk.transactions {
-            if &tx.receiver_id == dao_id {
-                for action in &tx.actions {
-                    if let near_primitives::views::ActionView::FunctionCall {
-                        method_name,
-                        args,
-                        ..
-                    } = action
-                    {
-                        if method_name == "act_proposal" {
-                            let args_value = serde_json::from_slice::<Value>(&args)
-                                .expect("Couldn'e deserialize args.");
-                            let id = args_value
-                                .get("id")
-                                .expect("No id in args.")
-                                .as_u64()
-                                .unwrap();
-                            if proposal_id == id {
-                                proposal_txs.push((
-                                    tx.signer_id.clone(),
-                                    tx.hash,
+        for rc in &chunk.receipts {
+            if &rc.receiver_id == dao_id {
+                if let ReceiptEnumView::Action {
+                    signer_id, actions, ..
+                } = rc.receipt.clone()
+                {
+                    for action in actions {
+                        if let ActionView::FunctionCall {
+                            method_name, args, ..
+                        } = action
+                        {
+                            match method_name.as_str() {
+                                "act_proposal" => {
+                                    let args: Value = serde_json::from_slice(&args)
+                                        .expect("Couldn't deserialize args.");
+                                    let id = args
+                                        .get("id")
+                                        .expect("No id found at proposal.")
+                                        .as_u64()
+                                        .unwrap();
+                                    if proposal_id == id {
+                                        proposal_txs.push(TxMetadata {
+                                            signer_id: signer_id.clone(),
+                                            predecessor_id: rc.predecessor_id.clone(),
+                                            reciept_hash: rc.receipt_id,
+                                            block_height,
+                                            timestamp,
+                                        })
+                                    }
+                                }
+                                // There will be mismatch if two proposals are created in the same block.
+                                "add_proposal" => proposal_txs.push(TxMetadata {
+                                    signer_id: signer_id.clone(),
+                                    predecessor_id: rc.predecessor_id.clone(),
+                                    reciept_hash: rc.receipt_id,
                                     block_height,
                                     timestamp,
-                                ));
+                                }),
+                                _ => {}
                             }
                         }
                     }

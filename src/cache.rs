@@ -1,3 +1,4 @@
+use anyhow::Result;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use std::collections::HashMap;
@@ -34,7 +35,7 @@ pub async fn get_latest_dao_cache(
     client: &Arc<JsonRpcClient>,
     store: &ProposalStore,
     dao_id: &AccountId,
-) -> CachedProposals {
+) -> Result<CachedProposals> {
     {
         let store_read = store
             .read()
@@ -42,7 +43,7 @@ pub async fn get_latest_dao_cache(
 
         if let Some(c) = store_read.get(dao_id.as_str()) {
             if c.last_updated.elapsed() <= CACHE_LIFE_TIME {
-                return c.clone();
+                return Ok(c.clone());
             }
         }
     };
@@ -51,8 +52,7 @@ pub async fn get_latest_dao_cache(
         fetch_proposals(&client, &dao_id),
         fetch_policy(&client, &dao_id),
         fetch_contract_version(&client, &dao_id)
-    )
-    .unwrap();
+    )?;
 
     let mut store_write = store
         .write()
@@ -64,7 +64,7 @@ pub async fn get_latest_dao_cache(
         version,
     };
     store_write.insert(dao_id.to_string(), new_cache.clone());
-    new_cache
+    Ok(new_cache)
 }
 
 pub async fn get_latest_proposal_cache(
@@ -72,7 +72,7 @@ pub async fn get_latest_proposal_cache(
     cache: &ProposalCache,
     dao_id: &AccountId,
     proposal_id: u64,
-) -> CachedProposal {
+) -> Result<CachedProposal> {
     let cache_key = (dao_id.to_string(), proposal_id);
     let last_cached_proposal: Option<CachedProposal> = {
         let cache_read = cache
@@ -81,7 +81,7 @@ pub async fn get_latest_proposal_cache(
 
         if let Some(cached) = cache_read.get(&cache_key) {
             if cached.last_updated.elapsed() <= CACHE_LIFE_TIME {
-                return cached.clone();
+                return Ok(cached.clone());
             }
             Some(cached.clone())
         } else {
@@ -92,7 +92,7 @@ pub async fn get_latest_proposal_cache(
     // Fetch proposal and version in parallel
     let block_height_limit = last_cached_proposal
         .as_ref()
-        .map_or(0, |c| c.txs_log.last().unwrap().2);
+        .map_or(0, |c| c.txs_log.last().unwrap().block_height);
     let (proposal, txs_log) = tokio::try_join!(
         fetch_proposal(&client, &dao_id, proposal_id),
         fetch_proposal_log_txs(&client, dao_id, proposal_id, block_height_limit)
@@ -114,5 +114,5 @@ pub async fn get_latest_proposal_cache(
     };
     cache_write.insert(cache_key, cached_proposal.clone());
 
-    cached_proposal
+    Ok(cached_proposal)
 }
