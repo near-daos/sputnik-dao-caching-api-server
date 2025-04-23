@@ -2,11 +2,16 @@
 extern crate rocket;
 mod cache;
 mod filters;
+mod persistence;
 mod rpc_client;
 pub mod scraper;
+#[cfg(test)]
+#[path = "./tests/integration_test.rs"]
+mod tests;
 
 use near_primitives::types::AccountId;
 use rocket::State;
+
 use rocket::http::Status;
 use rocket::serde::json::Json;
 
@@ -15,6 +20,7 @@ use std::sync::{Arc, RwLock};
 
 use cache::{ProposalCache, ProposalStore, get_latest_dao_cache, get_latest_proposal_cache};
 use filters::ProposalFilters;
+use persistence::{CachePersistence, read_cache_from_file};
 use scraper::{Proposal, TxMetadata};
 
 use serde::Serialize;
@@ -60,14 +66,20 @@ async fn get_specific_proposal(
 }
 
 #[launch]
-fn rocket() -> _ {
+pub fn rocket() -> _ {
     let proposals_store: ProposalStore = Arc::new(RwLock::new(HashMap::new()));
-    let proposal_cache: ProposalCache = Arc::new(RwLock::new(HashMap::new()));
+    let proposal_cache: ProposalCache =
+        read_cache_from_file().unwrap_or_else(|_| Arc::new(RwLock::new(HashMap::new())));
+
+    let cache_persistence = CachePersistence {
+        proposal_cache: proposal_cache.clone(),
+    };
 
     rocket::build()
         .manage(proposals_store)
         .manage(proposal_cache)
         .mount("/", routes![get_dao_proposals, get_specific_proposal])
+        .attach(cache_persistence)
         .configure(
             rocket::Config::figment()
                 .merge(("port", 5001))

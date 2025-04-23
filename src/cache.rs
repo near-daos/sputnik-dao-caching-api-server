@@ -1,14 +1,18 @@
 use anyhow::Result;
+use borsh::{BorshDeserialize, BorshSerialize};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
+use near_sdk::json_types::U64;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio;
 
 use crate::scraper::{
-    Policy, Proposal, StateVersion, TxMetadata, fetch_contract_version, fetch_policy,
-    fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
+    Policy, Proposal, ProposalStatus, StateVersion, TxMetadata, fetch_contract_version,
+    fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
 };
 
 const CACHE_LIFE_TIME: Duration = Duration::from_secs(5);
@@ -21,11 +25,37 @@ pub struct CachedProposals {
     pub version: StateVersion,
 }
 
-#[derive(Clone)]
+#[derive(Clone, BorshSerialize)]
 pub struct CachedProposal {
+    #[borsh(skip)]
     pub proposal: Proposal,
+    #[borsh(skip)]
     pub last_updated: Instant,
     pub txs_log: Vec<TxMetadata>,
+}
+
+// Required to store in storage
+impl BorshDeserialize for CachedProposal {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let txs_log = Vec::<TxMetadata>::deserialize_reader(reader)?;
+
+        // Create the struct with default values for skipped fields
+        Ok(CachedProposal {
+            proposal: Proposal {
+                id: 0,
+                proposer: "".parse().unwrap(),
+                description: "".to_string(),
+                kind: Value::default(),
+                status: ProposalStatus::InProgress,
+                vote_counts: HashMap::new(),
+                votes: HashMap::new(),
+                submission_time: U64(0),
+                last_actions_log: None,
+            },
+            last_updated: Instant::now() - CACHE_LIFE_TIME,
+            txs_log,
+        })
+    }
 }
 
 pub type ProposalStore = Arc<RwLock<HashMap<String, CachedProposals>>>;

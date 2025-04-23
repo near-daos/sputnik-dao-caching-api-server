@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bincode::BorrowDecode;
 use near_jsonrpc_client::{JsonRpcClient, methods};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::hash::CryptoHash;
@@ -13,11 +14,11 @@ use rocket::serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-use borsh::BorshDeserialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 
 use rocket::form::FromFormField;
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, BorshSerialize, BorshDeserialize, Clone, Debug)]
 pub struct TxMetadata {
     pub signer_id: AccountId,
     pub predecessor_id: AccountId,
@@ -36,7 +37,17 @@ pub enum Vote {
     Remove,
 }
 
-#[derive(FromFormField, Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[derive(
+    FromFormField,
+    Debug,
+    Deserialize,
+    Serialize,
+    BorshSerialize,
+    BorshDeserialize,
+    Clone,
+    PartialEq,
+    Eq,
+)]
 pub enum ProposalStatus {
     InProgress,
     Approved,
