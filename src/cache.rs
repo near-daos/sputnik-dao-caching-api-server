@@ -3,7 +3,6 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use near_sdk::json_types::U64;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

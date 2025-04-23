@@ -1,3 +1,6 @@
 /.DS_Store
 /target
 /local
+/sandbox
+/init_script/node_modules
+created-accounts*.json
