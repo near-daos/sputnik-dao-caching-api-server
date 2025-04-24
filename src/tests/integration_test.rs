@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod test {
-    use crate::rocket;
+    use crate::scraper::Proposal;
+    use crate::{ProposalOutput, rocket};
     use rocket::http::Status;
     use rocket::local::blocking::Client;
-    use serde_json::Value;
 
     #[test]
     fn test_get_dao_proposals() {
@@ -14,7 +14,8 @@ mod test {
         assert_eq!(response.status(), Status::Ok);
 
         let body_str = response.into_string().expect("response body");
-        let body: Vec<Value> = serde_json::from_str(&body_str).expect("valid JSON");
+        let proposals: Vec<Proposal> = serde_json::from_str(&body_str).expect("valid JSON");
+        assert_eq!(proposals.len(), 2);
     }
 
     #[test]
@@ -26,6 +27,8 @@ mod test {
         assert_eq!(response.status(), Status::Ok);
 
         let body_str = response.into_string().expect("response body");
-        let proposal: Value = serde_json::from_str(&body_str).expect("valid JSON");
+        let proposal: ProposalOutput = serde_json::from_str(&body_str).expect("valid JSON");
+        // 25 votes were made + 1 tx of proposal creation.
+        assert_eq!(proposal.txs_log.len(), 26);
     }
 }

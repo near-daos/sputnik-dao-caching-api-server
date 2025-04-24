@@ -23,9 +23,9 @@ use filters::ProposalFilters;
 use persistence::{CachePersistence, read_cache_from_file};
 use scraper::{Proposal, TxMetadata};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct ProposalOutput {
     #[serde(flatten)]
     proposal: Proposal,

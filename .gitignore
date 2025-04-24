@@ -2,5 +2,6 @@
 /target
 /local
 /sandbox
+/sandbox_init
 /init_script/node_modules
 created-accounts*.json

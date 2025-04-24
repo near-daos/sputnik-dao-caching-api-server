@@ -1,12 +1,12 @@
 const fs = require("fs");
 const { KeyPair, connect, utils } = require("near-api-js");
 
-const accountsNumber = 4;
+const accountsNumber = 60;
 
 const config = {
   networkId: "sandbox",
   nodeUrl: "http://localhost:3030",
-  keyPath: "../sandbox/validator_key.json",
+  keyPath: process.env.VALIDATOR_KEY_PATH || "../sandbox/validator_key.json",
   masterAccount: "test.near",
   smartContractPath: "../sputnikdao2.wasm",
   accountsFile: "created-accounts.json",
