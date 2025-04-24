@@ -38,7 +38,7 @@ async fn get_dao_proposals(
     filters: ProposalFilters,
     store: &State<ProposalStore>,
 ) -> Result<Json<Vec<Proposal>>, Status> {
-    let dao_id: AccountId = dao_id.parse().unwrap();
+    let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
 
     let cached = get_latest_dao_cache(&client, &store, &dao_id)
@@ -54,7 +54,7 @@ async fn get_specific_proposal(
     proposal_id: u64,
     cache: &State<ProposalCache>,
 ) -> Result<Json<ProposalOutput>, Status> {
-    let dao_id_account: AccountId = dao_id.parse().unwrap();
+    let dao_id_account: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
     let proposal_cached = get_latest_proposal_cache(&client, cache, &dao_id_account, proposal_id)
         .await

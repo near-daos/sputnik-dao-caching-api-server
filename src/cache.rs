@@ -3,6 +3,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use near_sdk::json_types::U64;
+use rocket::http::Status;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -125,8 +126,7 @@ pub async fn get_latest_proposal_cache(
     let (proposal, txs_log) = tokio::try_join!(
         fetch_proposal(&client, &dao_id, proposal_id),
         fetch_proposal_log_txs(&client, dao_id, proposal_id, block_height_limit)
-    )
-    .unwrap();
+    )?;
 
     let txs_log =
         last_cached_proposal.map_or(txs_log.clone(), |c| [&c.txs_log[..], &txs_log[..]].concat());
