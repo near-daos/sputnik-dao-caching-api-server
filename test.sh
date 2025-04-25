@@ -6,6 +6,7 @@ cleanup() {
   echo "Cleaning up..."
   docker stop near-node 2>/dev/null || true
   rm -r sandbox
+  rm cache.bin
   echo "Cleanup completed."
 }
 
