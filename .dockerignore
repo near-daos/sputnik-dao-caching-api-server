@@ -1,0 +1,12 @@
+fly.toml
+.git/
+.gitignore
+target/
+Dockerfile
+.dockerignore
+.vscode/
+.idea/
+sandbox*/
+local/
+init_script/
+cache.bin

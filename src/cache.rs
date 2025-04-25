@@ -3,7 +3,6 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use near_sdk::json_types::U64;
-use rocket::http::Status;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -11,13 +10,13 @@ use std::time::{Duration, Instant};
 use tokio;
 
 use crate::scraper::{
-    Policy, Proposal, ProposalStatus, StateVersion, TxMetadata, fetch_contract_version,
-    fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
+    CountsVersions, Policy, Proposal, ProposalStatus, StateVersion, TxMetadata,
+    fetch_contract_version, fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
 };
 
 const CACHE_LIFE_TIME: Duration = Duration::from_secs(5);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CachedProposals {
     pub proposals: Vec<Proposal>,
     pub policy: Policy,
@@ -47,7 +46,7 @@ impl BorshDeserialize for CachedProposal {
                 description: "".to_string(),
                 kind: Value::default(),
                 status: ProposalStatus::InProgress,
-                vote_counts: HashMap::new(),
+                vote_counts: CountsVersions::V2(HashMap::new()),
                 votes: HashMap::new(),
                 submission_time: U64(0),
                 last_actions_log: None,

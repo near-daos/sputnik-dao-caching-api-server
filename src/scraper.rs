@@ -1,5 +1,4 @@
 use anyhow::Result;
-use bincode::BorrowDecode;
 use near_jsonrpc_client::{JsonRpcClient, methods};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::hash::CryptoHash;
@@ -8,7 +7,7 @@ use near_primitives::types::AccountId;
 use near_primitives::views::{ActionView, ReceiptEnumView};
 use near_primitives::{types::FunctionArgs, views::QueryRequest};
 use near_sdk::BlockHeight;
-use near_sdk::json_types::U64;
+use near_sdk::json_types::{U64, U128};
 use rocket::futures::future::try_join_all;
 use rocket::serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -81,13 +80,21 @@ pub enum StateVersion {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum CountsVersions {
+    // In actual contract u128 is used
+    V1(HashMap<String, [u64; 3]>),
+    V2(HashMap<String, [U128; 3]>),
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Proposal {
     pub id: u64,
     pub proposer: String,
     pub description: String,
     pub kind: Value,
     pub status: ProposalStatus,
-    pub vote_counts: HashMap<String, [String; 3]>,
+    pub vote_counts: CountsVersions,
     pub votes: HashMap<String, Vote>,
     pub submission_time: U64,
     pub last_actions_log: Option<Vec<ProposalLog>>,
@@ -124,7 +131,6 @@ pub async fn fetch_proposals(
             args: FunctionArgs::from(vec![]),
         },
     };
-
     let last_id_response = client.call(last_id_request).await?;
     let last_id = if let QueryResponseKind::CallResult(result) = last_id_response.kind {
         serde_json::from_slice::<u64>(&result.result)?
@@ -173,7 +179,6 @@ pub async fn fetch_proposals(
 
     Ok(all_proposals)
 }
-
 pub async fn fetch_proposal(
     client: &JsonRpcClient,
     dao_id: &AccountId,
