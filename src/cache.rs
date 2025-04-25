@@ -121,7 +121,7 @@ pub async fn get_latest_proposal_cache(
     // Fetch proposal and version in parallel
     let block_height_limit = last_cached_proposal
         .as_ref()
-        .map_or(0, |c| c.txs_log.last().unwrap().block_height);
+        .map_or(0, |c| c.txs_log.last().map(|l| l.block_height).unwrap_or(0));
     let (proposal, txs_log) = tokio::try_join!(
         fetch_proposal(&client, &dao_id, proposal_id),
         fetch_proposal_log_txs(&client, dao_id, proposal_id, block_height_limit)

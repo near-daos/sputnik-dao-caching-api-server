@@ -30,6 +30,14 @@ mod test {
         let proposal: ProposalOutput = serde_json::from_str(&body_str).expect("valid JSON");
         // 25 votes were made + 1 tx of proposal creation.
         assert_eq!(proposal.txs_log.len(), 26);
+        
+        // Verify txs_log is in chronological order (ascending) by timestamp
+        for i in 1..proposal.txs_log.len() {
+            assert!(
+                proposal.txs_log[i-1].timestamp <= proposal.txs_log[i].timestamp,
+                "Transaction logs should be in chronological order by timestamp"
+            );
+        }
     }
 
     #[test]
