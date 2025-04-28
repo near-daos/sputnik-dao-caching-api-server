@@ -30,11 +30,11 @@ mod test {
         let proposal: ProposalOutput = serde_json::from_str(&body_str).expect("valid JSON");
         // 25 votes were made + 1 tx of proposal creation.
         assert_eq!(proposal.txs_log.len(), 26);
-        
+
         // Verify txs_log is in chronological order (ascending) by timestamp
         for i in 1..proposal.txs_log.len() {
             assert!(
-                proposal.txs_log[i-1].timestamp <= proposal.txs_log[i].timestamp,
+                proposal.txs_log[i - 1].timestamp <= proposal.txs_log[i].timestamp,
                 "Transaction logs should be in chronological order by timestamp"
             );
         }
@@ -74,6 +74,15 @@ mod test {
                 "Proposal kind should be Transfer"
             );
         }
+
+        // Test another proposal type
+        let type_response = client
+            .get("/proposals/account-0.test.near?proposal_type=Bounty")
+            .dispatch();
+        assert_eq!(type_response.status(), Status::Ok);
+        let type_body = type_response.into_string().expect("response body");
+        let type_proposals: Vec<Proposal> = serde_json::from_str(&type_body).expect("valid JSON");
+        assert_eq!(type_proposals.len(), 0, "No proposals should be found.");
 
         // Test min_votes filter with min_votes=1 - should return only the one with votes
         let min_votes_response = client

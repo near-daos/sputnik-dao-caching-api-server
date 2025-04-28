@@ -50,13 +50,7 @@ impl ProposalFilters {
                 let proposal_type_match = self
                     .proposal_type
                     .as_ref()
-                    .map(|pt| {
-                        proposal
-                            .kind
-                            .to_string()
-                            .to_lowercase()
-                            .contains(&pt.to_lowercase())
-                    })
+                    .map(|pt| proposal.kind.get(pt).is_some())
                     .unwrap_or(true);
 
                 let votes_match = self
