@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod test {
-    use crate::scraper::{Proposal, ProposalStatus};
+
+    use crate::scraper::Proposal;
     use crate::{ProposalOutput, rocket};
+    use near_sdk::NearToken;
     use rocket::http::Status;
     use rocket::local::blocking::Client;
 
@@ -41,6 +43,71 @@ mod test {
     }
 
     #[test]
+    fn test_propose_kind_filtering() {
+        let rocket = rocket();
+        let client = Client::tracked(rocket).expect("valid rocket instance");
+
+        // Filter by transfer receiver
+        let type_response = client
+            .get("/proposals/account-0.test.near?proposal_type=Transfer:receiver_id")
+            .dispatch();
+        assert_eq!(type_response.status(), Status::Ok);
+        let type_body = type_response.into_string().expect("response body");
+        let type_proposals: Vec<Proposal> = serde_json::from_str(&type_body).expect("valid JSON");
+        assert_eq!(type_proposals.len(), 2, "Both proposals should be found.");
+
+        let type_response = client
+            .get("/proposals/account-0.test.near?proposal_type=Transfer:receiver_id:=account-2.test.near")
+            .dispatch();
+        assert_eq!(type_response.status(), Status::Ok);
+        let type_body = type_response.into_string().expect("response body");
+        let type_proposals: Vec<Proposal> = serde_json::from_str(&type_body).expect("valid JSON");
+        assert_eq!(type_proposals.len(), 2, "Both proposals should be found.");
+
+        let type_response = client
+            .get("/proposals/account-0.test.near?proposal_type=Transfer:receiver_id:=account-0.test.near")
+            .dispatch();
+        assert_eq!(type_response.status(), Status::Ok);
+        let type_body = type_response.into_string().expect("response body");
+        let type_proposals: Vec<Proposal> = serde_json::from_str(&type_body).expect("valid JSON");
+        assert_eq!(type_proposals.len(), 0, "No proposals should be found.");
+
+        // Filter by amount
+        let type_response = client
+            .get(format!(
+                "/proposals/account-0.test.near?proposal_type=Transfer:amount:={}",
+                NearToken::from_millinear(10).as_yoctonear() // 0.01 Near
+            ))
+            .dispatch();
+        assert_eq!(type_response.status(), Status::Ok);
+        let type_body = type_response.into_string().expect("response body");
+        let type_proposals: Vec<Proposal> = serde_json::from_str(&type_body).expect("valid JSON");
+        assert_eq!(type_proposals.len(), 2, "Both proposals should be found.");
+
+        let type_response = client
+            .get(format!(
+                "/proposals/account-0.test.near?proposal_type=Transfer:amount:%3E{}", // >
+                NearToken::from_millinear(11).as_yoctonear()                          // 0.011 Near
+            ))
+            .dispatch();
+        assert_eq!(type_response.status(), Status::Ok);
+        let type_body = type_response.into_string().expect("response body");
+        let type_proposals: Vec<Proposal> = serde_json::from_str(&type_body).expect("valid JSON");
+        assert_eq!(type_proposals.len(), 2, "Both proposals should be found.");
+
+        let type_response = client
+            .get(format!(
+                "/proposals/account-0.test.near?proposal_type=Transfer:amount:%3C{}", // <
+                NearToken::from_millinear(11).as_yoctonear()                          // 0.011 Near
+            ))
+            .dispatch();
+        assert_eq!(type_response.status(), Status::Ok);
+        let type_body = type_response.into_string().expect("response body");
+        let type_proposals: Vec<Proposal> = serde_json::from_str(&type_body).expect("valid JSON");
+        assert_eq!(type_proposals.len(), 0, "No proposals should be found.");
+    }
+
+    #[test]
     fn test_all_filter_options() {
         let rocket = rocket();
         let client = Client::tracked(rocket).expect("valid rocket instance");
@@ -77,7 +144,7 @@ mod test {
 
         // Test another proposal type
         let type_response = client
-            .get("/proposals/account-0.test.near?proposal_type=Bounty")
+            .get("/proposals/account-0.test.near?proposal_type=Bounty&proposal_type=Transfer")
             .dispatch();
         assert_eq!(type_response.status(), Status::Ok);
         let type_body = type_response.into_string().expect("response body");
