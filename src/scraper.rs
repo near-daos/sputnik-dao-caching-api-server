@@ -83,8 +83,8 @@ pub enum StateVersion {
 #[serde(untagged)]
 pub enum CountsVersions {
     // In actual contract u128 is used
-    V1(HashMap<String, [u64; 3]>),
-    V2(HashMap<String, [U128; 3]>),
+    V1(u64),
+    V2(U128),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -94,7 +94,7 @@ pub struct Proposal {
     pub description: String,
     pub kind: Value,
     pub status: ProposalStatus,
-    pub vote_counts: CountsVersions,
+    pub vote_counts: HashMap<String, [CountsVersions; 3]>,
     pub votes: HashMap<String, Vote>,
     pub submission_time: U64,
     pub last_actions_log: Option<Vec<ProposalLog>>,

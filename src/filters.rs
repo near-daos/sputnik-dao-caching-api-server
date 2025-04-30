@@ -1,5 +1,6 @@
-use crate::scraper::{Policy, Proposal, ProposalStatus};
+use crate::scraper::{CountsVersions, Policy, Proposal, ProposalStatus};
 use anyhow::{Result, anyhow};
+use near_sdk::AccountId;
 use rocket::form::{FromForm, FromFormField};
 use rocket::serde::Deserialize;
 
@@ -16,6 +17,7 @@ pub struct ProposalFilters {
     proposer: Option<String>,
     proposal_type: Option<Vec<String>>,
     min_votes: Option<usize>,
+    approvers: Option<Vec<String>>,
     sort_by: Option<SortBy>,
     sort_direction: Option<String>,
 }
@@ -25,49 +27,63 @@ impl ProposalFilters {
         let mut filtered_proposals = proposals
             .into_iter()
             .filter(|proposal| {
-                let status_match = self
-                    .status
-                    .as_ref()
-                    .map(|s| proposal.status == *s)
-                    .unwrap_or(true);
+                if let Some(status) = &self.status {
+                    if proposal.status != *status {
+                        return false;
+                    }
+                }
 
-                let keyword_match = self
-                    .keyword
-                    .as_ref()
-                    .map(|k| {
+                if let Some(keyword) = &self.keyword {
+                    if proposal
+                        .description
+                        .to_lowercase()
+                        .contains(&keyword.to_lowercase())
+                        != true
+                    {
+                        return false;
+                    }
+                }
+
+                if let Some(proposer) = &self.proposer {
+                    if proposal.proposer != *proposer {
+                        return false;
+                    }
+                }
+
+                // All approvers should be present
+                if let Some(approvers) = &self.approvers {
+                    if !approvers.iter().all(|approver| {
                         proposal
-                            .description
-                            .to_lowercase()
-                            .contains(&k.to_lowercase())
-                    })
-                    .unwrap_or(true);
+                            .vote_counts
+                            .get(approver)
+                            .map(|votes| match votes[0] {
+                                CountsVersions::V1(v) => v > 0,
+                                CountsVersions::V2(v) => v.0 > 0,
+                            })
+                            .unwrap_or(false)
+                    }) {
+                        return false;
+                    }
+                }
 
-                let proposer_match = self
-                    .proposer
-                    .as_ref()
-                    .map(|p| proposal.proposer == *p)
-                    .unwrap_or(true);
+                if let Some(types) = &self.proposal_type {
+                    if types
+                        .iter()
+                        .all(|pt| filter_proposal_type(pt, proposal).unwrap_or(false))
+                        != true
+                    {
+                        return false;
+                    }
+                }
 
-                let proposal_type_match = self
-                    .proposal_type
-                    .as_ref()
-                    .map(|types| {
-                        types
-                            .iter()
-                            .all(|pt| filter_proposal_type(pt, proposal).unwrap_or(false))
-                    })
-                    .unwrap_or(true);
+                if let Some(min) = self.min_votes {
+                    if proposal.votes.len() < min {
+                        return false;
+                    }
+                }
 
-                let votes_match = self
-                    .min_votes
-                    .map(|min| proposal.votes.len() >= min)
-                    .unwrap_or(true);
-
-                status_match
-                    && keyword_match
-                    && proposer_match
-                    && proposal_type_match
-                    && votes_match
+                // If we reach here, all filters have passed
+                true
             })
             .collect::<Vec<_>>();
 

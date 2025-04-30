@@ -46,7 +46,7 @@ impl BorshDeserialize for CachedProposal {
                 description: "".to_string(),
                 kind: Value::default(),
                 status: ProposalStatus::InProgress,
-                vote_counts: CountsVersions::V2(HashMap::new()),
+                vote_counts: HashMap::new(),
                 votes: HashMap::new(),
                 submission_time: U64(0),
                 last_actions_log: None,
