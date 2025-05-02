@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use tokio;
 
 use crate::scraper::{
-    CountsVersions, Policy, Proposal, ProposalStatus, StateVersion, TxMetadata,
-    fetch_contract_version, fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
+    Policy, Proposal, ProposalStatus, StateVersion, TxMetadata, fetch_contract_version,
+    fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
 };
 
 const CACHE_LIFE_TIME: Duration = Duration::from_secs(5);

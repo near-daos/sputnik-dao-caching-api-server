@@ -1,6 +1,5 @@
 use crate::scraper::{CountsVersions, Policy, Proposal, ProposalStatus};
 use anyhow::{Result, anyhow};
-use near_sdk::AccountId;
 use rocket::form::{FromForm, FromFormField};
 use rocket::serde::Deserialize;
 
