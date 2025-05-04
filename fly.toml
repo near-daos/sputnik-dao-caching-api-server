@@ -9,7 +9,7 @@ primary_region = 'arn'
 [build]
 
 [env]
-NEAR_RPC_URL = 'https://archival-rpc.mainnet.near.org'
+NEAR_RPC_URL = 'https://archival-rpc.mainnet.fastnear.com'
 PORT = '5001'
 ROCKET_ADDRESS = '0.0.0.0'
 ROCKET_PORT = '5001'
