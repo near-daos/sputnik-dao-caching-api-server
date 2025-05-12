@@ -14,6 +14,7 @@ use csv_view::ProposalCsvView;
 use near_primitives::types::AccountId;
 use rocket::State;
 use rocket::response::content::RawText;
+use rocket_cors::{AllowedOrigins, CorsOptions};
 
 use rocket::http::{Accept, Status};
 use rocket::response::Responder;
@@ -114,11 +115,24 @@ pub fn rocket() -> _ {
         proposal_cache: proposal_cache.clone(),
     };
 
+    // Configure CORS
+    let cors = CorsOptions::default()
+        .allowed_origins(AllowedOrigins::some_exact(&[
+            "http://localhost:8080",
+            "http://localhost:5001",
+            "https://sputnik-indexer-divine-fog-3863.fly.dev",
+            "https://sputnik-indexer.fly.dev",
+        ]))
+        .allow_credentials(true)
+        .to_cors()
+        .expect("Failed to create CORS fairing");
+
     rocket::build()
         .manage(proposals_store)
         .manage(proposal_cache)
         .mount("/", routes![get_dao_proposals, get_specific_proposal])
         .attach(cache_persistence)
+        .attach(cors)
         .configure(
             rocket::Config::figment()
                 .merge(("port", 5001))
