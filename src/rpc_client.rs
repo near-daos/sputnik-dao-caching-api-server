@@ -9,6 +9,7 @@ static RPC_CLIENT: OnceLock<Arc<JsonRpcClient>> = OnceLock::new();
 pub fn get_rpc_client() -> Arc<JsonRpcClient> {
     RPC_CLIENT
         .get_or_init(|| {
+            dotenvy::dotenv().ok();
             let rpc_url = env::var("NEAR_RPC_URL").unwrap_or("http://127.0.0.1:3030".to_string());
             let mut client = JsonRpcClient::connect(rpc_url);
             if let Some(key) = env::var("NEAR_FAST_API_KEY").ok() {

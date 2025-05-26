@@ -10,25 +10,30 @@ pub mod scraper;
 #[path = "./tests/integration_test.rs"]
 mod tests;
 
-use csv_view::ProposalCsvView;
 use near_primitives::types::AccountId;
 use rocket::State;
-use rocket::response::content::RawText;
-use rocket_cors::{AllowedOrigins, CorsOptions};
 
-use rocket::http::{Accept, Status};
-use rocket::response::Responder;
 use rocket::serde::json::Json;
+use rocket_cors::{AllowedOrigins, CorsOptions};
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use cache::{ProposalCache, ProposalStore, get_latest_dao_cache, get_latest_proposal_cache};
+use cache::{
+    FtMetadataCache, ProposalCache, ProposalStore, get_latest_dao_cache, get_latest_proposal_cache,
+};
 use filters::ProposalFilters;
 use persistence::{CachePersistence, read_cache_from_file};
-use scraper::{Proposal, TxMetadata};
+use scraper::{
+    AssetExchangeProposalFormatter, DefaultFormatter, LockupProposalFormatter, Proposal,
+    ProposalFormatter, StakeDelegationProposalFormatter, TransferProposalFormatter, TxMetadata,
+};
 
+use rocket::Request;
+use rocket::http::{ContentType, Header, Status};
+use rocket::response::{Responder, Response};
 use serde::{Deserialize, Serialize};
+use std::io::Cursor;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ProposalOutput {
@@ -37,21 +42,12 @@ struct ProposalOutput {
     txs_log: Vec<TxMetadata>,
 }
 
-#[derive(Responder)]
-enum ResponseOptions<T> {
-    #[response(content_type = "application/json")]
-    Json(Json<T>),
-    #[response(content_type = "text/csv")]
-    Csv(RawText<String>),
-}
-
 #[get("/proposals/<dao_id>?<filters..>")]
 async fn get_dao_proposals(
     dao_id: &str,
     filters: ProposalFilters,
     store: &State<ProposalStore>,
-    accept: Option<&Accept>,
-) -> Result<ResponseOptions<Vec<Proposal>>, Status> {
+) -> Result<Json<Vec<Proposal>>, Status> {
     let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
 
@@ -60,18 +56,7 @@ async fn get_dao_proposals(
         .map_err(|_| Status::NotFound)?;
     let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
 
-    if accept
-        .map(|a| a.preferred().media_type() == &rocket::http::MediaType::CSV)
-        .unwrap_or(false)
-    {
-        let mut wtr = csv::Writer::from_writer(vec![]);
-        for p in filtered_proposals {
-            wtr.serialize(ProposalCsvView::from(p)).unwrap();
-        }
-        let csv_data = String::from_utf8(wtr.into_inner().unwrap()).unwrap();
-        return Ok(ResponseOptions::Csv(RawText(csv_data)));
-    }
-    Ok(ResponseOptions::Json(Json(filtered_proposals)))
+    Ok(Json(filtered_proposals))
 }
 
 #[get("/proposals/<dao_id>/<proposal_id>")]
@@ -79,30 +64,92 @@ async fn get_specific_proposal(
     dao_id: &str,
     proposal_id: u64,
     cache: &State<ProposalCache>,
-    accept: Option<&Accept>,
-) -> Result<ResponseOptions<ProposalOutput>, Status> {
+) -> Result<Json<ProposalOutput>, Status> {
     let dao_id_account: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
     let proposal_cached = get_latest_proposal_cache(&client, cache, &dao_id_account, proposal_id)
         .await
         .map_err(|_| Status::NotFound)?;
 
-    if accept
-        .map(|a| a.preferred().media_type() == &rocket::http::MediaType::CSV)
-        .unwrap_or(false)
-    {
-        let mut wtr = csv::Writer::from_writer(vec![]);
-        let mut p_csv = ProposalCsvView::from(proposal_cached.proposal);
-        p_csv.txs_log = Some(serde_json::to_string(&proposal_cached.txs_log).unwrap_or_default());
-        wtr.serialize(p_csv).unwrap();
-
-        let csv_data = String::from_utf8(wtr.into_inner().unwrap()).unwrap();
-        return Ok(ResponseOptions::Csv(RawText(csv_data)));
-    }
-    Ok(ResponseOptions::Json(Json(ProposalOutput {
+    Ok(Json(ProposalOutput {
         proposal: proposal_cached.proposal,
         txs_log: proposal_cached.txs_log,
-    })))
+    }))
+}
+
+pub struct CsvFile {
+    pub content: String,
+    pub filename: String,
+}
+
+impl<'r> Responder<'r, 'static> for CsvFile {
+    fn respond_to(self, _req: &'r Request<'_>) -> rocket::response::Result<'static> {
+        Response::build()
+            .header(ContentType::new("text", "csv"))
+            .header(Header::new(
+                "Content-Disposition",
+                format!("attachment; filename=\"{}\"", self.filename),
+            ))
+            .sized_body(self.content.len(), Cursor::new(self.content))
+            .ok()
+    }
+}
+
+#[get("/csv/proposals/<dao_id>?<filters..>")]
+async fn csv_proposals(
+    dao_id: &str,
+    filters: ProposalFilters,
+    store: &State<ProposalStore>,
+    ft_metadata_cache: &State<FtMetadataCache>,
+) -> Result<CsvFile, Status> {
+    if dao_id.is_empty() {
+        return Err(Status::BadRequest);
+    }
+    let client = rpc_client::get_rpc_client();
+    let cached = get_latest_dao_cache(
+        &client,
+        &store,
+        &dao_id.parse().map_err(|_| Status::BadRequest)?,
+    )
+    .await
+    .map_err(|_| Status::NotFound)?;
+
+    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
+
+    let proposal_types = filters.proposal_type.as_deref().unwrap_or(&[]);
+    let keyword_lower = filters.keyword.as_ref().map(|k| k.to_lowercase());
+
+    let is_type = |t: &str| proposal_types.iter().any(|pt| pt == t);
+
+    let formatter = match keyword_lower.as_deref() {
+        Some(keyword) if is_type("FunctionCall") && keyword.contains("lockup") => {
+            ProposalFormatter::Sync(Box::new(LockupProposalFormatter))
+        }
+        Some(keyword) if is_type("FunctionCall") && keyword.contains("asset") => {
+            ProposalFormatter::Async(Box::new(AssetExchangeProposalFormatter))
+        }
+        Some(keyword) if is_type("FunctionCall") && keyword.contains("stake") => {
+            ProposalFormatter::Sync(Box::new(StakeDelegationProposalFormatter))
+        }
+        _ if is_type("Transfer") => ProposalFormatter::Async(Box::new(TransferProposalFormatter)),
+        _ => ProposalFormatter::Sync(Box::new(DefaultFormatter)),
+    };
+
+    let mut wtr = csv::Writer::from_writer(vec![]);
+    wtr.write_record(&formatter.headers()).unwrap();
+
+    for proposal in filtered_proposals {
+        let record = formatter
+            .format(&client, &ft_metadata_cache, &proposal)
+            .await;
+        wtr.write_record(&record).unwrap();
+    }
+
+    let data = String::from_utf8(wtr.into_inner().unwrap()).unwrap();
+    Ok(CsvFile {
+        content: data,
+        filename: format!("proposals_{}.csv", dao_id),
+    })
 }
 
 #[launch]
@@ -110,6 +157,8 @@ pub fn rocket() -> _ {
     let proposals_store: ProposalStore = Arc::new(RwLock::new(HashMap::new()));
     let proposal_cache: ProposalCache =
         read_cache_from_file().unwrap_or_else(|_| Arc::new(RwLock::new(HashMap::new())));
+
+    let ft_metadata_cache: FtMetadataCache = Arc::new(RwLock::new(HashMap::new()));
 
     let cache_persistence = CachePersistence {
         proposal_cache: proposal_cache.clone(),
@@ -130,7 +179,11 @@ pub fn rocket() -> _ {
     rocket::build()
         .manage(proposals_store)
         .manage(proposal_cache)
-        .mount("/", routes![get_dao_proposals, get_specific_proposal])
+        .manage(ft_metadata_cache)
+        .mount(
+            "/",
+            routes![get_dao_proposals, get_specific_proposal, csv_proposals],
+        )
         .attach(cache_persistence)
         .attach(cors)
         .configure(

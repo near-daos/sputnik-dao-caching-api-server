@@ -3,19 +3,29 @@ use near_jsonrpc_client::{JsonRpcClient, methods};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::hash::CryptoHash;
 use near_primitives::types::AccountId;
+use std::sync::Arc;
 
+use base64::{Engine as _, engine::general_purpose};
+use borsh::{BorshDeserialize, BorshSerialize};
+use chrono::{TimeZone, Utc};
+use futures::FutureExt;
+use futures::future::BoxFuture;
+
+use crate::cache::{FtMetadataCache, get_ft_metadata_cache};
+use near_jsonrpc_client::methods::query::RpcQueryRequest;
 use near_primitives::views::{ActionView, ReceiptEnumView};
 use near_primitives::{types::FunctionArgs, views::QueryRequest};
 use near_sdk::BlockHeight;
 use near_sdk::json_types::{U64, U128};
+use rocket::form::FromFormField;
 use rocket::futures::future::try_join_all;
 use rocket::serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use serde_json::from_slice;
+use serde_json::json;
 use std::collections::HashMap;
-
-use borsh::{BorshDeserialize, BorshSerialize};
-
-use rocket::form::FromFormField;
 
 #[derive(Serialize, Deserialize, BorshSerialize, BorshDeserialize, Clone, Debug)]
 pub struct TxMetadata {
@@ -116,6 +126,100 @@ pub struct ActionLog {
     pub proposal_id: U64,
     pub action: Action,
     pub block_height: U64,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+pub struct FtMetadata {
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub icon: Option<String>,
+    pub reference: Option<String>,
+    pub reference_hash: Option<String>,
+}
+
+impl Default for FtMetadata {
+    fn default() -> Self {
+        FtMetadata {
+            name: "Near".to_string(),
+            symbol: "NEAR".to_string(),
+            decimals: 24,
+            icon: None,
+            reference: None,
+            reference_hash: None,
+        }
+    }
+}
+
+pub struct TransferProposalFormatter;
+pub struct LockupProposalFormatter;
+pub struct StakeDelegationProposalFormatter;
+pub struct AssetExchangeProposalFormatter;
+pub struct StakeDelegationroposalFormatter;
+pub struct DefaultFormatter;
+
+#[derive(Deserialize, Debug)]
+struct VestingSchedule {
+    cliff_timestamp: Option<String>,
+    end_timestamp: Option<String>,
+    start_timestamp: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct VestingScheduleWrapper {
+    #[serde(rename = "VestingSchedule")]
+    vesting_schedule: Option<VestingSchedule>,
+}
+
+#[derive(Deserialize, Debug)]
+struct LockupArgs {
+    owner_account_id: Option<String>,
+    lockup_timestamp: Option<String>,
+    release_duration: Option<String>,
+    vesting_schedule: Option<VestingScheduleWrapper>,
+    whitelist_account_id: Option<String>,
+}
+
+pub trait ProposalCsvFormatterSync: Send + Sync {
+    fn headers(&self) -> Vec<&'static str>;
+    fn format(&self, proposal: &Proposal) -> Vec<String>;
+}
+
+pub trait ProposalCsvFormatterAsync: Send + Sync {
+    fn headers(&self) -> Vec<&'static str>;
+    fn format<'a>(
+        &'a self,
+        client: &'a Arc<JsonRpcClient>,
+        ft_metadata_cache: &'a FtMetadataCache,
+        proposal: &'a Proposal,
+    ) -> BoxFuture<'a, Vec<String>>;
+}
+
+pub enum ProposalFormatter {
+    Sync(Box<dyn ProposalCsvFormatterSync>),
+    Async(Box<dyn ProposalCsvFormatterAsync>),
+}
+
+impl ProposalFormatter {
+    pub fn headers(&self) -> Vec<&'static str> {
+        match self {
+            ProposalFormatter::Sync(f) => f.headers(),
+            ProposalFormatter::Async(f) => f.headers(),
+        }
+    }
+
+    pub async fn format(
+        &self,
+        client: &Arc<JsonRpcClient>,
+        ft_metadata_cache: &FtMetadataCache,
+        proposal: &Proposal,
+    ) -> Vec<String> {
+        match self {
+            ProposalFormatter::Sync(f) => f.format(proposal),
+            ProposalFormatter::Async(f) => f.format(client, ft_metadata_cache, proposal).await,
+        }
+    }
 }
 
 pub async fn fetch_proposals(
@@ -445,4 +549,490 @@ pub async fn fetch_proposal_txs_in_block(
     }
 
     Ok(proposal_txs)
+}
+
+pub async fn fetch_ft_metadata(
+    client: &near_jsonrpc_client::JsonRpcClient,
+    contract_id: &AccountId,
+) -> Result<FtMetadata> {
+    let request = RpcQueryRequest {
+        block_reference: near_primitives::types::Finality::Final.into(),
+        request: QueryRequest::CallFunction {
+            account_id: contract_id.clone(),
+            method_name: "ft_metadata".to_string(),
+            args: FunctionArgs::from(vec![]),
+        },
+    };
+
+    let response = client.call(request).await?;
+
+    if let QueryResponseKind::CallResult(result) = response.kind {
+        let metadata: FtMetadata = serde_json::from_slice(&result.result)?;
+        Ok(metadata)
+    } else {
+        Err(anyhow::anyhow!("Failed to fetch FT metadata"))
+    }
+}
+
+fn format_ns_timestamp_from_i64(ns: i64) -> Option<String> {
+    let secs = ns / 1_000_000_000;
+    let nsec = (ns % 1_000_000_000) as u32;
+
+    let datetime_utc = Utc.timestamp_opt(secs, nsec).single()?;
+
+    Some(datetime_utc.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+}
+
+fn format_ns_timestamp_u64(ns: u64) -> String {
+    format_ns_timestamp_from_i64(ns as i64).unwrap_or_else(|| "Invalid timestamp".to_string())
+}
+
+fn format_ns_timestamp_str(ns_str: &str) -> Option<String> {
+    ns_str
+        .parse::<i64>()
+        .ok()
+        .and_then(format_ns_timestamp_from_i64)
+}
+
+fn format_votes(votes: &std::collections::HashMap<String, Vote>) -> String {
+    votes
+        .iter()
+        .map(|(user, vote)| format!("{}: {:?}", user, vote))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn extract_from_description(desc: &str, key: &str) -> Option<String> {
+    let key_normalized = key.to_lowercase().replace(' ', "");
+
+    // 1) Try parsing JSON
+    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(desc) {
+        for (k, v) in json_val.as_object()? {
+            if k.to_lowercase().replace(' ', "") == key_normalized {
+                return v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| Some(v.to_string()));
+            }
+        }
+    }
+
+    // 2) Parse lines split by newlines or <br>
+    let lines = desc
+        .split(|c| c == '\n' || c == '\r')
+        .flat_map(|line| line.split("<br>"))
+        .map(|line| line.trim());
+
+    for line in lines {
+        if line.starts_with('*') {
+            let line_content = line.trim_start_matches('*').trim();
+            if let Some(pos) = line_content.find(':') {
+                let key_part = line_content[..pos].trim().to_lowercase().replace(' ', "");
+                if key_part == key_normalized {
+                    let val = line_content[pos + 1..].trim();
+                    return Some(val.to_string());
+                }
+            }
+        }
+    }
+
+    // Fallback for full description
+    if key_normalized == "description" {
+        Some(desc.to_string())
+    } else {
+        None
+    }
+}
+
+impl ProposalCsvFormatterAsync for TransferProposalFormatter {
+    fn headers(&self) -> Vec<&'static str> {
+        vec![
+            "ID",
+            "Created Date",
+            "Status",
+            "Title",
+            "Summary",
+            "Recipient",
+            "Requested Token",
+            "Funding Ask",
+            "Created by",
+            "Notes",
+            "Approvers",
+        ]
+    }
+    fn format<'a>(
+        &'a self,
+        client: &'a Arc<JsonRpcClient>,
+        ft_metadata_cache: &'a FtMetadataCache,
+        proposal: &'a Proposal,
+    ) -> BoxFuture<'a, Vec<String>> {
+        async move {
+            let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
+
+            let title =
+                extract_from_description(&proposal.description, "title").unwrap_or_default();
+            let summary =
+                extract_from_description(&proposal.description, "summary").unwrap_or_default();
+            let notes =
+                extract_from_description(&proposal.description, "notes").unwrap_or_default();
+            let description =
+                extract_from_description(&proposal.description, "description").unwrap_or_default();
+
+            let status = format!("{:?}", proposal.status);
+            let created_by = proposal.proposer.clone();
+
+            let approvers = format_votes(&proposal.votes);
+
+            let kind = &proposal.kind;
+            let transfer = kind.get("Transfer");
+
+            let (requested_token, funding_ask, recipient) = if let Some(transfer_val) = transfer {
+                let token_id = transfer_val
+                    .get("token_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("");
+                let amount = transfer_val
+                    .get("amount")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let receiver = transfer_val
+                    .get("receiver_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                (
+                    token_id.to_string(),
+                    amount.to_string(),
+                    receiver.to_string(),
+                )
+            } else {
+                ("".to_string(), "".to_string(), "".to_string())
+            };
+
+            let ft_metadata =
+                match get_ft_metadata_cache(&client, &ft_metadata_cache, &requested_token).await {
+                    Ok(metadata) => metadata,
+                    Err(e) => {
+                        eprintln!("Error fetching ft metadata: {}", e);
+                        FtMetadata::default()
+                    }
+                };
+
+            vec![
+                proposal.id.to_string(),
+                created_date,
+                status,
+                if !title.is_empty() {
+                    title
+                } else {
+                    description
+                },
+                summary,
+                recipient,
+                ft_metadata.symbol,
+                normalize_token_amount(&funding_ask, ft_metadata.decimals.into()),
+                created_by,
+                notes,
+                approvers,
+            ]
+        }
+        .boxed()
+    }
+}
+
+fn extract_action_field<'a>(proposal: &'a Proposal, field: &str) -> Option<&'a str> {
+    proposal
+        .kind
+        .get("FunctionCall")?
+        .get("actions")?
+        .get(0)?
+        .get(field)?
+        .as_str()
+}
+fn parse_args<T: DeserializeOwned>(args_base64: &str) -> Option<T> {
+    let decoded_bytes = general_purpose::STANDARD.decode(args_base64).ok()?;
+    let parsed: T = from_slice(&decoded_bytes).ok()?;
+    Some(parsed)
+}
+
+fn extract_args(proposal: &Proposal) -> Option<LockupArgs> {
+    let args_base64 = extract_action_field(proposal, "args").unwrap_or("");
+    parse_args(args_base64)
+}
+
+fn normalize_token_amount(raw: &str, decimals: u32) -> String {
+    raw.parse::<f64>()
+        .map(|v| v / 10f64.powi(decimals as i32))
+        .map(|v| format!("{:.5}", v)) // format with 5 decimals (adjust as needed)
+        .unwrap_or_default()
+}
+
+impl ProposalCsvFormatterSync for LockupProposalFormatter {
+    fn headers(&self) -> Vec<&'static str> {
+        vec![
+            "ID",
+            "Created At",
+            "Status",
+            "Recipient Account",
+            "Amount",
+            "Start Date",
+            "End Date",
+            "Cliff Date",
+            "Allow Cancellation",
+            "Allow Staking",
+            "Approvers",
+        ]
+    }
+
+    fn format(&self, proposal: &Proposal) -> Vec<String> {
+        let args_opt = extract_args(proposal);
+        let args = args_opt.as_ref();
+
+        let recipient = args
+            .and_then(|a| a.owner_account_id.clone())
+            .unwrap_or_default();
+
+        let amount = format!(
+            "{} NEAR",
+            normalize_token_amount(&extract_action_field(proposal, "deposit").unwrap_or(""), 24)
+        );
+        let (start_date, end_date, cliff_date) = match args {
+            Some(a) => {
+                // Try simple lockup + duration first
+                if let (Some(start), Some(duration)) = (&a.lockup_timestamp, &a.release_duration) {
+                    let start_date = format_ns_timestamp_str(start).unwrap_or_default();
+
+                    let end_date = match (start.parse::<i64>(), duration.parse::<i64>()) {
+                        (Ok(start_ns), Ok(duration_ns)) => {
+                            let end_ns = start_ns.checked_add(duration_ns).unwrap_or(0);
+                            format_ns_timestamp_str(&end_ns.to_string()).unwrap_or_default()
+                        }
+                        _ => String::new(),
+                    };
+
+                    (start_date, end_date, String::new()) // No cliff date in this format
+                } else {
+                    // Fallback to nested vesting schedule
+                    let vesting = a
+                        .vesting_schedule
+                        .as_ref()
+                        .and_then(|v| v.vesting_schedule.as_ref());
+
+                    let start_date = vesting
+                        .and_then(|vs| vs.start_timestamp.as_ref())
+                        .map(|s| format_ns_timestamp_str(s).unwrap_or_default())
+                        .unwrap_or_default();
+
+                    let end_date = vesting
+                        .and_then(|vs| vs.end_timestamp.as_ref())
+                        .map(|s| format_ns_timestamp_str(s).unwrap_or_default())
+                        .unwrap_or_default();
+
+                    let cliff_date = vesting
+                        .and_then(|vs| vs.cliff_timestamp.as_ref())
+                        .map(|s| format_ns_timestamp_str(s).unwrap_or_default())
+                        .unwrap_or_default();
+
+                    (start_date, end_date, cliff_date)
+                }
+            }
+            None => (String::new(), String::new(), String::new()),
+        };
+
+        let allow_cancellation = if args.and_then(|a| a.vesting_schedule.as_ref()).is_some() {
+            "yes"
+        } else {
+            "no"
+        }
+        .to_string();
+
+        let allow_staking = if args
+            .and_then(|a| a.whitelist_account_id.as_ref())
+            .map_or(true, |id| id != "lockup-no-whitelist.near")
+        {
+            "yes"
+        } else {
+            "no"
+        }
+        .to_string();
+
+        let approvers = format_votes(&proposal.votes);
+
+        let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
+
+        let status = format!("{:?}", proposal.status);
+
+        vec![
+            proposal.id.to_string(),
+            created_date,
+            status,
+            recipient,
+            amount,
+            start_date,
+            end_date,
+            cliff_date,
+            allow_cancellation,
+            allow_staking,
+            approvers,
+        ]
+    }
+}
+
+impl ProposalCsvFormatterSync for DefaultFormatter {
+    fn headers(&self) -> Vec<&'static str> {
+        vec!["Proposal Id", "Status", "Description", "Kind", "Approvers"]
+    }
+    fn format(&self, proposal: &Proposal) -> Vec<String> {
+        let approvers = format_votes(&proposal.votes);
+        let status = format!("{:?}", proposal.status);
+        let kind = proposal.kind.clone();
+        vec![
+            proposal.id.to_string(),
+            status,
+            proposal.description.clone(),
+            kind.to_string(),
+            approvers,
+        ]
+    }
+}
+
+impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
+    fn headers(&self) -> Vec<&'static str> {
+        vec![
+            "Proposal Id",
+            "Status",
+            "Type",
+            "Amount",
+            "Validator",
+            "Created by",
+            "Notes",
+            "Approvers",
+        ]
+    }
+
+    fn format(&self, proposal: &Proposal) -> Vec<String> {
+        let notes = extract_from_description(&proposal.description, "notes").unwrap_or_default();
+        let receiver_id = proposal
+            .kind
+            .get("FunctionCall")
+            .and_then(|fc| fc.get("receiver_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let method_name = extract_action_field(proposal, "method_name").unwrap_or("");
+
+        // Determine proposal type and amount
+        let (proposal_type, amount) = match method_name {
+            "unstake" => {
+                let amt = extract_action_field(proposal, "args")
+                    .and_then(|args_b64| parse_args::<serde_json::Value>(args_b64))
+                    .and_then(|json| {
+                        json.get("amount")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_default();
+                ("Unstake".to_string(), amt)
+            }
+            "deposit_and_stake" => {
+                let amt = extract_action_field(proposal, "deposit")
+                    .unwrap_or("")
+                    .to_string();
+                ("Stake".to_string(), amt)
+            }
+            "withdraw_all" => {
+                let amt =
+                    extract_from_description(&proposal.description, "Amount").unwrap_or_default();
+                ("Withdraw".to_string(), amt)
+            }
+            _ => ("Unknown".to_string(), "".to_string()),
+        };
+        let parsed_amount = format!("{} NEAR", normalize_token_amount(&amount, 24));
+
+        let approvers = format_votes(&proposal.votes);
+        let status = format!("{:?}", proposal.status);
+
+        vec![
+            proposal.id.to_string(),
+            status,
+            proposal_type,
+            parsed_amount,
+            receiver_id.to_string(),
+            proposal.proposer.clone(),
+            notes,
+            approvers,
+        ]
+    }
+}
+
+impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
+    fn headers(&self) -> Vec<&'static str> {
+        vec![
+            "Proposal Id",
+            "Status",
+            "Send Amount",
+            "Send Token",
+            "Receive Amount",
+            "Receive Token",
+            "Created By",
+            "Notes",
+            "Approvers",
+        ]
+    }
+
+    fn format<'a>(
+        &'a self,
+        client: &'a Arc<JsonRpcClient>,
+        ft_metadata_cache: &'a FtMetadataCache,
+        proposal: &'a Proposal,
+    ) -> BoxFuture<'a, Vec<String>> {
+        async move {
+            let proposal_id = proposal.id.to_string();
+            let created_by = proposal.proposer.clone();
+            let approvers = format_votes(&proposal.votes);
+
+            let send_amount =
+                extract_from_description(&proposal.description, "amountIn").unwrap_or_default();
+            let send_token =
+                extract_from_description(&proposal.description, "tokenIn").unwrap_or_default();
+            let receive_token =
+                extract_from_description(&proposal.description, "tokenOut").unwrap_or_default();
+            let receive_amount =
+                extract_from_description(&proposal.description, "amountOut").unwrap_or_default();
+            let notes =
+                extract_from_description(&proposal.description, "notes").unwrap_or_default();
+            let status = format!("{:?}", proposal.status);
+
+            let ft_meta_send =
+                match get_ft_metadata_cache(&client, &ft_metadata_cache, &send_token).await {
+                    Ok(metadata) => metadata,
+                    Err(e) => {
+                        eprintln!("Error fetching send token ft metadata: {}", e);
+                        FtMetadata::default()
+                    }
+                };
+
+            let ft_meta_receive =
+                match get_ft_metadata_cache(&client, &ft_metadata_cache, &receive_token).await {
+                    Ok(metadata) => metadata,
+                    Err(e) => {
+                        eprintln!("Error fetching receive token ft metadata: {}", e);
+                        FtMetadata::default()
+                    }
+                };
+
+            vec![
+                proposal_id,
+                status,
+                send_amount,
+                ft_meta_send.symbol.clone(),
+                receive_amount,
+                ft_meta_receive.symbol.clone(),
+                created_by,
+                notes,
+                approvers,
+            ]
+        }
+        .boxed()
+    }
 }

@@ -12,9 +12,9 @@ enum SortBy {
 #[derive(Deserialize, FromForm)]
 pub struct ProposalFilters {
     status: Option<ProposalStatus>,
-    keyword: Option<String>,
+    pub keyword: Option<String>,
     proposer: Option<String>,
-    proposal_type: Option<Vec<String>>,
+    pub proposal_type: Option<Vec<String>>,
     min_votes: Option<usize>,
     approvers: Option<Vec<String>>,
     sort_by: Option<SortBy>,
@@ -32,13 +32,17 @@ impl ProposalFilters {
                     }
                 }
 
-                if let Some(keyword) = &self.keyword {
-                    if proposal
-                        .description
-                        .to_lowercase()
-                        .contains(&keyword.to_lowercase())
-                        != true
-                    {
+                if let Some(keyword_str) = &self.keyword {
+                    let keywords: Vec<String> = keyword_str
+                        .split(',')
+                        .map(|k| k.trim().to_lowercase())
+                        .filter(|k| !k.is_empty())
+                        .collect();
+
+                    let description_lower = proposal.description.to_lowercase();
+
+                    // Return false if *none* of the keywords are found in description
+                    if !keywords.iter().any(|kw| description_lower.contains(kw)) {
                         return false;
                     }
                 }
