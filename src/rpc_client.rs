@@ -10,11 +10,6 @@ pub fn get_rpc_client() -> Arc<JsonRpcClient> {
     RPC_CLIENT
         .get_or_init(|| {
             dotenvy::dotenv().ok();
-            println!("NEAR_RPC_URL: {:?}", std::env::var("NEAR_RPC_URL"));
-            println!(
-                "NEAR_FAST_API_KEY: {:?}",
-                std::env::var("NEAR_FAST_API_KEY")
-            );
             let rpc_url = env::var("NEAR_RPC_URL")
                 .unwrap_or("https://archival-rpc.mainnet.fastnear.com".to_string());
             let mut client = JsonRpcClient::connect(rpc_url);

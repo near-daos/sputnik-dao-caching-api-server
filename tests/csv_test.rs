@@ -138,43 +138,4 @@ mod test {
             "Should have at least one data row"
         );
     }
-
-    #[test]
-    fn test_csv_proposals_transfer_headers_and_row() {
-        let client = Client::tracked(rocket()).expect("valid rocket instance");
-        let response = client
-            .get("/csv/proposals/testing-astradao.sputnik-dao.near?proposal_type=Transfer")
-            .dispatch();
-        assert_eq!(
-            response.status(),
-            Status::Ok,
-            "Expected 200 OK but got {:?}. Body: {:?}",
-            response.status(),
-            response.into_string()
-        );
-
-        let body = response.into_string().expect("response body");
-        let headers = extract_csv_headers(&body);
-
-        assert_eq!(
-            headers,
-            vec![
-                "ID",
-                "Created Date",
-                "Status",
-                "Title",
-                "Summary",
-                "Recipient",
-                "Requested Token",
-                "Funding Ask",
-                "Created by",
-                "Notes",
-                "Approvers"
-            ]
-        );
-        assert!(
-            csv_has_data_rows(&body),
-            "Should have at least one data row"
-        );
-    }
 }

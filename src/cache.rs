@@ -73,7 +73,6 @@ pub async fn get_latest_dao_cache(
     store: &ProposalStore,
     dao_id: &AccountId,
 ) -> Result<CachedProposals> {
-    println!("Checking cache for DAO ID: {}", dao_id);
     {
         let store_read = store
             .read()
@@ -86,10 +85,6 @@ pub async fn get_latest_dao_cache(
             }
         }
     }
-    println!(
-        "Cache miss or stale, fetching new data for DAO ID: {}",
-        dao_id
-    );
 
     let (proposals, policy, version) = tokio::try_join!(
         fetch_proposals(&client, &dao_id),
