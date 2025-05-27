@@ -30,7 +30,13 @@ mod test {
         let response = client
             .get("/csv/proposals/testing-astradao.sputnik-dao.near?proposal_type=Transfer")
             .dispatch();
-        assert_eq!(response.status(), Status::Ok);
+        assert_eq!(
+            response.status(),
+            Status::Ok,
+            "Expected 200 OK but got {:?}. Body: {:?}",
+            response.status(),
+            response.into_string()
+        );
 
         let body = response.into_string().expect("response body");
         let headers = extract_csv_headers(&body);
