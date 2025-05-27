@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 use tokio;
 
 use crate::scraper::{
-    Policy, Proposal, ProposalStatus, StateVersion, TxMetadata, fetch_contract_version,
-    fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
+    FtMetadata, Policy, Proposal, ProposalStatus, StateVersion, TxMetadata, fetch_contract_version,
+    fetch_ft_metadata, fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
 };
 
 const CACHE_LIFE_TIME: Duration = Duration::from_secs(5);
+const FT_CACHE_LIFETIME: Duration = Duration::from_secs(60 * 60); // 60 minutes
 
 #[derive(Clone, Debug)]
 pub struct CachedProposals {
@@ -32,6 +33,13 @@ pub struct CachedProposal {
     pub last_updated: Instant,
     pub txs_log: Vec<TxMetadata>,
 }
+
+pub struct CachedFtMetadata {
+    pub metadata: FtMetadata,
+    pub last_updated: Instant,
+}
+
+pub type FtMetadataCache = Arc<RwLock<HashMap<AccountId, CachedFtMetadata>>>;
 
 // Required to store in storage
 impl BorshDeserialize for CachedProposal {
@@ -72,10 +80,11 @@ pub async fn get_latest_dao_cache(
 
         if let Some(c) = store_read.get(dao_id.as_str()) {
             if c.last_updated.elapsed() <= CACHE_LIFE_TIME {
+                println!("Cache hit for DAO ID: {}", dao_id);
                 return Ok(c.clone());
             }
         }
-    };
+    }
 
     let (proposals, policy, version) = tokio::try_join!(
         fetch_proposals(&client, &dao_id),
@@ -143,4 +152,54 @@ pub async fn get_latest_proposal_cache(
     cache_write.insert(cache_key, cached_proposal.clone());
 
     Ok(cached_proposal)
+}
+
+pub async fn get_ft_metadata_cache(
+    client: &Arc<JsonRpcClient>,
+    cache: &FtMetadataCache,
+    contract_id: &str,
+) -> Result<FtMetadata> {
+    // Check if token is empty or NEAR (case-insensitive)
+    if contract_id.is_empty() || contract_id.eq_ignore_ascii_case("near") {
+        return Ok(FtMetadata::default());
+    }
+
+    let token_id = contract_id.parse::<AccountId>()?;
+
+    // Acquire read lock and check cache
+    {
+        let cache_read = match cache.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("Warning: cache read lock poisoned, recovering.");
+                poisoned.into_inner()
+            }
+        };
+
+        if let Some(cached) = cache_read.get(&token_id) {
+            if cached.last_updated.elapsed() <= FT_CACHE_LIFETIME {
+                return Ok(cached.metadata.clone());
+            }
+        }
+    }
+
+    let metadata = fetch_ft_metadata(client, &token_id).await?;
+
+    // Acquire write lock to update cache
+    let mut cache_write = match cache.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("Warning: cache write lock poisoned, recovering.");
+            poisoned.into_inner()
+        }
+    };
+
+    cache_write.insert(
+        token_id.clone(),
+        CachedFtMetadata {
+            metadata: metadata.clone(),
+            last_updated: Instant::now(),
+        },
+    );
+    Ok(metadata)
 }

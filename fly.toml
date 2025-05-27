@@ -4,7 +4,7 @@
 #
 
 app = 'sputnik-indexer-divine-fog-3863'
-primary_region = 'arn'
+primary_region = 'ams'
 
 [build]
 
