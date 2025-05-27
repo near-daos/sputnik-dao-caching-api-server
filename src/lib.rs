@@ -48,9 +48,13 @@ pub async fn get_dao_proposals(
     let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
 
-    let cached = get_latest_dao_cache(&client, &store, &dao_id)
-        .await
-        .map_err(|_| Status::NotFound)?;
+    let cached = match get_latest_dao_cache(&client, &store, &dao_id).await {
+        Ok(cache) => cache,
+        Err(e) => {
+            eprintln!("Failed to get latest DAO cache: {:?}", e);
+            return Err(Status::NotFound);
+        }
+    };
     let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
 
     Ok(Json(filtered_proposals))
