@@ -166,8 +166,16 @@ pub async fn get_ft_metadata_cache(
 
     let token_id = contract_id.parse::<AccountId>()?;
 
+    // Acquire read lock and check cache
     {
-        let cache_read = cache.read().expect("FT cache read lock failed");
+        let cache_read = match cache.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                eprintln!("Warning: cache read lock poisoned, recovering.");
+                poisoned.into_inner()
+            }
+        };
+
         if let Some(cached) = cache_read.get(&token_id) {
             if cached.last_updated.elapsed() <= FT_CACHE_LIFETIME {
                 return Ok(cached.metadata.clone());
@@ -177,7 +185,15 @@ pub async fn get_ft_metadata_cache(
 
     let metadata = fetch_ft_metadata(client, &token_id).await?;
 
-    let mut cache_write = cache.write().expect("FT cache write lock failed");
+    // Acquire write lock to update cache
+    let mut cache_write = match cache.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("Warning: cache write lock poisoned, recovering.");
+            poisoned.into_inner()
+        }
+    };
+
     cache_write.insert(
         token_id.clone(),
         CachedFtMetadata {
