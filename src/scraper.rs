@@ -880,7 +880,7 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
 
 impl ProposalCsvFormatterSync for DefaultFormatter {
     fn headers(&self) -> Vec<&'static str> {
-        vec!["Proposal Id", "Status", "Description", "Kind", "Approvers"]
+        vec!["ID", "Status", "Description", "Kind", "Approvers"]
     }
     fn format(&self, proposal: &Proposal) -> Vec<String> {
         let approvers = format_votes(&proposal.votes);
@@ -899,7 +899,7 @@ impl ProposalCsvFormatterSync for DefaultFormatter {
 impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
-            "Proposal Id",
+            "ID",
             "Status",
             "Type",
             "Amount",
@@ -968,7 +968,7 @@ impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
 impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
-            "Proposal Id",
+            "ID",
             "Status",
             "Send Amount",
             "Send Token",

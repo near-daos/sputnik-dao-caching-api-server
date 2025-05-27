@@ -70,7 +70,7 @@ mod test {
 
         assert_eq!(
             headers,
-            vec!["Proposal Id", "Status", "Description", "Kind", "Approvers"]
+            vec!["ID", "Status", "Description", "Kind", "Approvers"]
         );
         assert!(
             csv_has_data_rows(&body),
@@ -92,7 +92,7 @@ mod test {
         assert_eq!(
             headers,
             vec![
-                "Proposal Id",
+                "ID",
                 "Status",
                 "Type",
                 "Amount",
@@ -155,7 +155,7 @@ mod test {
         assert_eq!(
             headers,
             vec![
-                "Proposal Id",
+                "ID",
                 "Status",
                 "Send Amount",
                 "Send Token",
