@@ -141,7 +141,7 @@ pub async fn csv_proposals(
 
     for proposal in filtered_proposals {
         let record = formatter
-            .format(&client, &ft_metadata_cache, &proposal)
+            .format(&client, &ft_metadata_cache, &proposal, &cached.policy)
             .await;
         wtr.write_record(&record).unwrap();
     }

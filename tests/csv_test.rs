@@ -1,28 +1,9 @@
 #[cfg(test)]
 mod test {
 
-    use csv::ReaderBuilder;
     use rocket::http::Status;
     use rocket::local::blocking::Client;
     use sputnik_indexer::rocket;
-
-    fn extract_csv_headers(csv_content: &str) -> Vec<String> {
-        let mut rdr = ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(csv_content.as_bytes());
-        rdr.headers()
-            .unwrap()
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    }
-
-    fn csv_has_data_rows(csv_content: &str) -> bool {
-        let mut rdr = ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(csv_content.as_bytes());
-        rdr.records().next().is_some()
-    }
 
     #[test]
     fn test_csv_proposals_default_headers_and_row() {
@@ -33,16 +14,12 @@ mod test {
         assert_eq!(response.status(), Status::Ok);
 
         let body = response.into_string().expect("response body");
-        let headers = extract_csv_headers(&body);
 
-        assert_eq!(
-            headers,
-            vec!["ID", "Status", "Description", "Kind", "Approvers"]
-        );
-        assert!(
-            csv_has_data_rows(&body),
-            "Should have at least one data row"
-        );
+        let lines: Vec<&str> = body.lines().collect();
+
+        let expected_headers =
+            "ID,Status,Description,Kind,Approvers (Approved),Approvers (Rejected/Remove)";
+        assert_eq!(lines[0], expected_headers, "Headers do not match");
     }
 
     #[test]
@@ -54,24 +31,16 @@ mod test {
         assert_eq!(response.status(), Status::Ok);
 
         let body = response.into_string().expect("response body");
-        let headers = extract_csv_headers(&body);
 
+        let lines: Vec<&str> = body.lines().collect();
+
+        let expected_headers = "ID,Status,Type,Amount,Token,Validator,Created by,Notes,Approvers (Approved),Approvers (Rejected/Remove)";
+        assert_eq!(lines[0], expected_headers, "Headers do not match");
+
+        let expected_first_row = "70,Approved,Stake,1.00000,NEAR,astro-stakers.poolv1.near,megha19.near,Testing Stake,megha19.near,";
         assert_eq!(
-            headers,
-            vec![
-                "ID",
-                "Status",
-                "Type",
-                "Amount",
-                "Validator",
-                "Created by",
-                "Notes",
-                "Approvers"
-            ]
-        );
-        assert!(
-            csv_has_data_rows(&body),
-            "Should have at least one data row"
+            lines[1], expected_first_row,
+            "First data row does not match"
         );
     }
 
@@ -84,27 +53,16 @@ mod test {
         assert_eq!(response.status(), Status::Ok);
 
         let body = response.into_string().expect("response body");
-        let headers = extract_csv_headers(&body);
 
+        let lines: Vec<&str> = body.lines().collect();
+
+        let expected_headers = "ID,Created At,Status,Recipient Account,Amount,Token,Start Date,End Date,Cliff Date,Allow Cancellation,Allow Staking,Approvers (Approved),Approvers (Rejected/Remove)";
+        assert_eq!(lines[0], expected_headers, "Headers do not match");
+
+        let expected_first_row = "197,2025-03-04 19:24:53 UTC,Approved,rubycop.near,4.00000,NEAR,1970-01-21 03:40:19 UTC,1970-01-21 03:41:45 UTC,1970-01-21 03:40:19 UTC,yes,yes,rubycop.near,";
         assert_eq!(
-            headers,
-            vec![
-                "ID",
-                "Created At",
-                "Status",
-                "Recipient Account",
-                "Amount",
-                "Start Date",
-                "End Date",
-                "Cliff Date",
-                "Allow Cancellation",
-                "Allow Staking",
-                "Approvers"
-            ]
-        );
-        assert!(
-            csv_has_data_rows(&body),
-            "Should have at least one data row"
+            lines[1], expected_first_row,
+            "First data row does not match"
         );
     }
 
@@ -115,27 +73,38 @@ mod test {
             .get("/csv/proposals/testing-astradao.sputnik-dao.near?proposal_type=FunctionCall&keyword=asset")
             .dispatch();
         assert_eq!(response.status(), Status::Ok);
-
         let body = response.into_string().expect("response body");
-        let headers = extract_csv_headers(&body);
 
+        let lines: Vec<&str> = body.lines().collect();
+
+        let expected_headers = "ID,Status,Send Amount,Send Token,Receive Amount,Receive Token,Created By,Notes,Approvers (Approved),Approvers (Rejected/Remove)";
+        assert_eq!(lines[0], expected_headers, "Headers do not match");
+
+        let expected_first_row = "65,Expired,1,USDC,0.99990,USDt,megha19.near,null,,";
         assert_eq!(
-            headers,
-            vec![
-                "ID",
-                "Status",
-                "Send Amount",
-                "Send Token",
-                "Receive Amount",
-                "Receive Token",
-                "Created By",
-                "Notes",
-                "Approvers"
-            ]
+            lines[1], expected_first_row,
+            "First data row does not match"
         );
-        assert!(
-            csv_has_data_rows(&body),
-            "Should have at least one data row"
+    }
+
+    #[test]
+    fn test_csv_proposals_transfer_headers_and_row() {
+        let client = Client::tracked(rocket()).expect("valid rocket instance");
+        let response = client
+            .get("/csv/proposals/testing-astradao.sputnik-dao.near?proposal_type=Transfer")
+            .dispatch();
+        assert_eq!(response.status(), Status::Ok);
+        let body = response.into_string().expect("response body");
+
+        let lines: Vec<&str> = body.lines().collect();
+
+        let expected_headers = "ID,Created Date,Status,Title,Summary,Recipient,Requested Token,Funding Ask,Created by,Notes,Approvers (Approved),Approvers (Rejected/Remove)";
+        assert_eq!(lines[0], expected_headers, "Headers do not match");
+
+        let expected_first_row = "15,2024-08-06 19:34:18 UTC,Rejected,DevHub Activities Report 7/22-8/4,DevHub Moderator Contributions Bi-Weekly Report,joespano.near,USDC,1.00000,megha19.near,this is notes,,\"megha19.near, theori.near\"";
+        assert_eq!(
+            lines[1], expected_first_row,
+            "First data row does not match"
         );
     }
 }

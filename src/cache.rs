@@ -161,7 +161,7 @@ pub async fn get_ft_metadata_cache(
 ) -> Result<FtMetadata> {
     // Check if token is empty or NEAR (case-insensitive)
     if contract_id.is_empty() || contract_id.eq_ignore_ascii_case("near") {
-        return Ok(FtMetadata::default());
+        return Ok(FtMetadata::near());
     }
 
     let token_id = contract_id.parse::<AccountId>()?;

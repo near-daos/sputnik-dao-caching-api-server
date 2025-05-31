@@ -4,6 +4,7 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::hash::CryptoHash;
 use near_primitives::types::AccountId;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose};
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -138,12 +139,23 @@ pub struct FtMetadata {
     pub reference_hash: Option<String>,
 }
 
-impl Default for FtMetadata {
-    fn default() -> Self {
+impl FtMetadata {
+    pub fn near() -> Self {
         FtMetadata {
             name: "Near".to_string(),
             symbol: "NEAR".to_string(),
             decimals: 24,
+            icon: None,
+            reference: None,
+            reference_hash: None,
+        }
+    }
+
+    pub fn empty() -> Self {
+        FtMetadata {
+            name: "".to_string(),
+            symbol: "".to_string(),
+            decimals: 0,
             icon: None,
             reference: None,
             reference_hash: None,
@@ -183,7 +195,7 @@ struct LockupArgs {
 
 pub trait ProposalCsvFormatterSync: Send + Sync {
     fn headers(&self) -> Vec<&'static str>;
-    fn format(&self, proposal: &Proposal) -> Vec<String>;
+    fn format(&self, proposal: &Proposal, policy: &Policy) -> Vec<String>;
 }
 
 pub trait ProposalCsvFormatterAsync: Send + Sync {
@@ -193,6 +205,7 @@ pub trait ProposalCsvFormatterAsync: Send + Sync {
         client: &'a Arc<JsonRpcClient>,
         ft_metadata_cache: &'a FtMetadataCache,
         proposal: &'a Proposal,
+        policy: &'a Policy,
     ) -> BoxFuture<'a, Vec<String>>;
 }
 
@@ -214,10 +227,13 @@ impl ProposalFormatter {
         client: &Arc<JsonRpcClient>,
         ft_metadata_cache: &FtMetadataCache,
         proposal: &Proposal,
+        policy: &Policy,
     ) -> Vec<String> {
         match self {
-            ProposalFormatter::Sync(f) => f.format(proposal),
-            ProposalFormatter::Async(f) => f.format(client, ft_metadata_cache, proposal).await,
+            ProposalFormatter::Sync(f) => f.format(proposal, policy),
+            ProposalFormatter::Async(f) => {
+                f.format(client, ft_metadata_cache, proposal, policy).await
+            }
         }
     }
 }
@@ -594,12 +610,23 @@ fn format_ns_timestamp_str(ns_str: &str) -> Option<String> {
         .and_then(format_ns_timestamp_from_i64)
 }
 
-fn format_votes(votes: &std::collections::HashMap<String, Vote>) -> String {
-    votes
-        .iter()
-        .map(|(user, vote)| format!("{}: {:?}", user, vote))
-        .collect::<Vec<_>>()
-        .join(", ")
+#[derive(Debug, Default)]
+struct FormattedVotes {
+    approved: Vec<String>,
+    rejected: Vec<String>, // includes both Reject and Remove
+}
+
+fn format_votes(votes: &HashMap<String, Vote>) -> FormattedVotes {
+    let mut formatted = FormattedVotes::default();
+
+    for (account, vote) in votes {
+        match vote {
+            Vote::Approve => formatted.approved.push(account.clone()),
+            Vote::Reject | Vote::Remove => formatted.rejected.push(account.clone()),
+        }
+    }
+
+    formatted
 }
 
 fn extract_from_description(desc: &str, key: &str) -> Option<String> {
@@ -644,6 +671,29 @@ fn extract_from_description(desc: &str, key: &str) -> Option<String> {
     }
 }
 
+fn get_current_time_nanos() -> U64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_nanos();
+
+    U64::from(nanos as u64)
+}
+
+fn get_status_display(status: &ProposalStatus, submission_time: u64, period: u64) -> String {
+    match status {
+        ProposalStatus::InProgress => {
+            let current_time = get_current_time_nanos().0;
+            if submission_time + period < current_time {
+                format!("Expired")
+            } else {
+                format!("Pending")
+            }
+        }
+        _ => format!("{:?}", status),
+    }
+}
+
 impl ProposalCsvFormatterAsync for TransferProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
@@ -657,7 +707,8 @@ impl ProposalCsvFormatterAsync for TransferProposalFormatter {
             "Funding Ask",
             "Created by",
             "Notes",
-            "Approvers",
+            "Approvers (Approved)",
+            "Approvers (Rejected/Remove)",
         ]
     }
     fn format<'a>(
@@ -665,6 +716,7 @@ impl ProposalCsvFormatterAsync for TransferProposalFormatter {
         client: &'a Arc<JsonRpcClient>,
         ft_metadata_cache: &'a FtMetadataCache,
         proposal: &'a Proposal,
+        policy: &'a Policy,
     ) -> BoxFuture<'a, Vec<String>> {
         async move {
             let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
@@ -678,10 +730,14 @@ impl ProposalCsvFormatterAsync for TransferProposalFormatter {
             let description =
                 extract_from_description(&proposal.description, "description").unwrap_or_default();
 
-            let status = format!("{:?}", proposal.status);
+            let status: String = get_status_display(
+                &proposal.status,
+                proposal.submission_time.0,
+                policy.proposal_period.0,
+            );
             let created_by = proposal.proposer.clone();
 
-            let approvers = format_votes(&proposal.votes);
+            let formatted_votes = format_votes(&proposal.votes);
 
             let kind = &proposal.kind;
             let transfer = kind.get("Transfer");
@@ -714,7 +770,7 @@ impl ProposalCsvFormatterAsync for TransferProposalFormatter {
                     Ok(metadata) => metadata,
                     Err(e) => {
                         eprintln!("Error fetching ft metadata: {}", e);
-                        FtMetadata::default()
+                        FtMetadata::empty()
                     }
                 };
 
@@ -733,7 +789,8 @@ impl ProposalCsvFormatterAsync for TransferProposalFormatter {
                 normalize_token_amount(&funding_ask, ft_metadata.decimals.into()),
                 created_by,
                 notes,
-                approvers,
+                formatted_votes.approved.join(", "),
+                formatted_votes.rejected.join(", "),
             ]
         }
         .boxed()
@@ -775,16 +832,18 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
             "Status",
             "Recipient Account",
             "Amount",
+            "Token",
             "Start Date",
             "End Date",
             "Cliff Date",
             "Allow Cancellation",
             "Allow Staking",
-            "Approvers",
+            "Approvers (Approved)",
+            "Approvers (Rejected/Remove)",
         ]
     }
 
-    fn format(&self, proposal: &Proposal) -> Vec<String> {
+    fn format(&self, proposal: &Proposal, policy: &Policy) -> Vec<String> {
         let args_opt = extract_args(proposal);
         let args = args_opt.as_ref();
 
@@ -793,7 +852,7 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
             .unwrap_or_default();
 
         let amount = format!(
-            "{} NEAR",
+            "{}",
             normalize_token_amount(&extract_action_field(proposal, "deposit").unwrap_or(""), 24)
         );
         let (start_date, end_date, cliff_date) = match args {
@@ -856,42 +915,59 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
         }
         .to_string();
 
-        let approvers = format_votes(&proposal.votes);
+        let formatted_votes = format_votes(&proposal.votes);
 
         let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
 
-        let status = format!("{:?}", proposal.status);
-
+        let status: String = get_status_display(
+            &proposal.status,
+            proposal.submission_time.0,
+            policy.proposal_period.0,
+        );
         vec![
             proposal.id.to_string(),
             created_date,
             status,
             recipient,
             amount,
+            "NEAR".to_string(),
             start_date,
             end_date,
             cliff_date,
             allow_cancellation,
             allow_staking,
-            approvers,
+            formatted_votes.approved.join(", "),
+            formatted_votes.rejected.join(", "),
         ]
     }
 }
 
 impl ProposalCsvFormatterSync for DefaultFormatter {
     fn headers(&self) -> Vec<&'static str> {
-        vec!["ID", "Status", "Description", "Kind", "Approvers"]
+        vec![
+            "ID",
+            "Status",
+            "Description",
+            "Kind",
+            "Approvers (Approved)",
+            "Approvers (Rejected/Remove)",
+        ]
     }
-    fn format(&self, proposal: &Proposal) -> Vec<String> {
-        let approvers = format_votes(&proposal.votes);
-        let status = format!("{:?}", proposal.status);
+    fn format(&self, proposal: &Proposal, policy: &Policy) -> Vec<String> {
+        let formatted_votes = format_votes(&proposal.votes);
+        let status: String = get_status_display(
+            &proposal.status,
+            proposal.submission_time.0,
+            policy.proposal_period.0,
+        );
         let kind = proposal.kind.clone();
         vec![
             proposal.id.to_string(),
             status,
             proposal.description.clone(),
             kind.to_string(),
-            approvers,
+            formatted_votes.approved.join(", "),
+            formatted_votes.rejected.join(", "),
         ]
     }
 }
@@ -903,14 +979,16 @@ impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
             "Status",
             "Type",
             "Amount",
+            "Token",
             "Validator",
             "Created by",
             "Notes",
-            "Approvers",
+            "Approvers (Approved)",
+            "Approvers (Rejected/Remove)",
         ]
     }
 
-    fn format(&self, proposal: &Proposal) -> Vec<String> {
+    fn format(&self, proposal: &Proposal, policy: &Policy) -> Vec<String> {
         let notes = extract_from_description(&proposal.description, "notes").unwrap_or_default();
         let receiver_id = proposal
             .kind
@@ -947,20 +1025,25 @@ impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
             }
             _ => ("Unknown".to_string(), "".to_string()),
         };
-        let parsed_amount = format!("{} NEAR", normalize_token_amount(&amount, 24));
+        let parsed_amount = format!("{}", normalize_token_amount(&amount, 24));
 
-        let approvers = format_votes(&proposal.votes);
-        let status = format!("{:?}", proposal.status);
-
+        let formatted_votes = format_votes(&proposal.votes);
+        let status: String = get_status_display(
+            &proposal.status,
+            proposal.submission_time.0,
+            policy.proposal_period.0,
+        );
         vec![
             proposal.id.to_string(),
             status,
             proposal_type,
             parsed_amount,
+            "NEAR".to_string(),
             receiver_id.to_string(),
             proposal.proposer.clone(),
             notes,
-            approvers,
+            formatted_votes.approved.join(", "),
+            formatted_votes.rejected.join(", "),
         ]
     }
 }
@@ -976,7 +1059,8 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
             "Receive Token",
             "Created By",
             "Notes",
-            "Approvers",
+            "Approvers (Approved)",
+            "Approvers (Rejected/Remove)",
         ]
     }
 
@@ -985,11 +1069,12 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
         client: &'a Arc<JsonRpcClient>,
         ft_metadata_cache: &'a FtMetadataCache,
         proposal: &'a Proposal,
+        policy: &'a Policy,
     ) -> BoxFuture<'a, Vec<String>> {
         async move {
             let proposal_id = proposal.id.to_string();
             let created_by = proposal.proposer.clone();
-            let approvers = format_votes(&proposal.votes);
+            let formatted_votes = format_votes(&proposal.votes);
 
             let send_amount =
                 extract_from_description(&proposal.description, "amountIn").unwrap_or_default();
@@ -1001,14 +1086,17 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
                 extract_from_description(&proposal.description, "amountOut").unwrap_or_default();
             let notes =
                 extract_from_description(&proposal.description, "notes").unwrap_or_default();
-            let status = format!("{:?}", proposal.status);
-
+            let status: String = get_status_display(
+                &proposal.status,
+                proposal.submission_time.0,
+                policy.proposal_period.0,
+            );
             let ft_meta_send =
                 match get_ft_metadata_cache(&client, &ft_metadata_cache, &send_token).await {
                     Ok(metadata) => metadata,
                     Err(e) => {
                         eprintln!("Error fetching send token ft metadata: {}", e);
-                        FtMetadata::default()
+                        FtMetadata::empty()
                     }
                 };
 
@@ -1017,7 +1105,7 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
                     Ok(metadata) => metadata,
                     Err(e) => {
                         eprintln!("Error fetching receive token ft metadata: {}", e);
-                        FtMetadata::default()
+                        FtMetadata::empty()
                     }
                 };
 
@@ -1030,7 +1118,8 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
                 ft_meta_receive.symbol.clone(),
                 created_by,
                 notes,
-                approvers,
+                formatted_votes.approved.join(", "),
+                formatted_votes.rejected.join(", "),
             ]
         }
         .boxed()
