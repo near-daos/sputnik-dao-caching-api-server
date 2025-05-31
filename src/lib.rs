@@ -122,8 +122,6 @@ pub async fn csv_proposals(
 
     let is_type = |t: &str| proposal_types.iter().any(|pt| pt == t);
 
-    println!("filtered_proposals: {:#?}", filtered_proposals);
-
     let formatter = match keyword_lower.as_deref() {
         Some(keyword) if is_type("FunctionCall") && keyword.contains("lockup") => {
             ProposalFormatter::Sync(Box::new(LockupProposalFormatter))
@@ -149,7 +147,6 @@ pub async fn csv_proposals(
     }
 
     let data = String::from_utf8(wtr.into_inner().unwrap()).unwrap();
-    println!("data: {}", data);
 
     Ok(CsvFile {
         content: data,
