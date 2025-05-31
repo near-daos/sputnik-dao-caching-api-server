@@ -626,6 +626,9 @@ fn format_votes(votes: &HashMap<String, Vote>) -> FormattedVotes {
         }
     }
 
+    formatted.approved.sort();
+    formatted.rejected.sort();
+
     formatted
 }
 
