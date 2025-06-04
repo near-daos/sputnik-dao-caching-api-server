@@ -831,7 +831,7 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
-            "Created At",
+            "Created Date",
             "Status",
             "Recipient Account",
             "Amount",
@@ -841,6 +841,7 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
             "Cliff Date",
             "Allow Cancellation",
             "Allow Staking",
+            "Created by",
             "Approvers (Approved)",
             "Approvers (Rejected/Remove)",
         ]
@@ -920,13 +921,14 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
 
         let formatted_votes = format_votes(&proposal.votes);
 
-        let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
+        let created_date: String = format_ns_timestamp_u64(proposal.submission_time.0);
 
         let status: String = get_status_display(
             &proposal.status,
             proposal.submission_time.0,
             policy.proposal_period.0,
         );
+        let created_by = proposal.proposer.clone();
         vec![
             proposal.id.to_string(),
             created_date,
@@ -939,6 +941,7 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
             cliff_date,
             allow_cancellation,
             allow_staking,
+            created_by,
             formatted_votes.approved.join(", "),
             formatted_votes.rejected.join(", "),
         ]
@@ -949,9 +952,11 @@ impl ProposalCsvFormatterSync for DefaultFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
+            "Created Date",
             "Status",
             "Description",
             "Kind",
+            "Created by",
             "Approvers (Approved)",
             "Approvers (Rejected/Remove)",
         ]
@@ -964,11 +969,15 @@ impl ProposalCsvFormatterSync for DefaultFormatter {
             policy.proposal_period.0,
         );
         let kind = proposal.kind.clone();
+        let created_date: String = format_ns_timestamp_u64(proposal.submission_time.0);
+        let created_by = proposal.proposer.clone();
         vec![
             proposal.id.to_string(),
+            created_date,
             status,
             proposal.description.clone(),
             kind.to_string(),
+            created_by,
             formatted_votes.approved.join(", "),
             formatted_votes.rejected.join(", "),
         ]
@@ -979,6 +988,7 @@ impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
+            "Created Date",
             "Status",
             "Type",
             "Amount",
@@ -1002,6 +1012,10 @@ impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
             .to_string();
         let method_name = extract_action_field(proposal, "method_name").unwrap_or("");
 
+        // returning empty for lockup related stake requests
+        if receiver_id.contains("lockup.near") {
+            return vec![];
+        }
         // Determine proposal type and amount
         let (proposal_type, amount) = match method_name {
             "unstake" => {
@@ -1036,8 +1050,10 @@ impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
             proposal.submission_time.0,
             policy.proposal_period.0,
         );
+        let created_date: String = format_ns_timestamp_u64(proposal.submission_time.0);
         vec![
             proposal.id.to_string(),
+            created_date,
             status,
             proposal_type,
             parsed_amount,
@@ -1055,6 +1071,7 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
+            "Created Date",
             "Status",
             "Send Amount",
             "Send Token",
@@ -1111,9 +1128,10 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
                         FtMetadata::empty()
                     }
                 };
-
+            let created_date: String = format_ns_timestamp_u64(proposal.submission_time.0);
             vec![
                 proposal_id,
+                created_date,
                 status,
                 send_amount,
                 ft_meta_send.symbol.clone(),

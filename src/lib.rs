@@ -143,6 +143,12 @@ pub async fn csv_proposals(
         let record = formatter
             .format(&client, &ft_metadata_cache, &proposal, &cached.policy)
             .await;
+
+        // Skip empty records (lockup requests)
+        if record.is_empty() {
+            continue;
+        }
+
         wtr.write_record(&record).unwrap();
     }
 

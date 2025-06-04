@@ -17,8 +17,7 @@ mod test {
 
         let lines: Vec<&str> = body.lines().collect();
 
-        let expected_headers =
-            "ID,Status,Description,Kind,Approvers (Approved),Approvers (Rejected/Remove)";
+        let expected_headers = "ID,Created Date,Status,Description,Kind,Created by,Approvers (Approved),Approvers (Rejected/Remove)";
         assert_eq!(lines[0], expected_headers, "Headers do not match");
     }
 
@@ -34,10 +33,10 @@ mod test {
 
         let lines: Vec<&str> = body.lines().collect();
 
-        let expected_headers = "ID,Status,Type,Amount,Token,Validator,Created by,Notes,Approvers (Approved),Approvers (Rejected/Remove)";
+        let expected_headers = "ID,Created Date,Status,Type,Amount,Token,Validator,Created by,Notes,Approvers (Approved),Approvers (Rejected/Remove)";
         assert_eq!(lines[0], expected_headers, "Headers do not match");
 
-        let expected_first_row = "70,Approved,Stake,1.00000,NEAR,astro-stakers.poolv1.near,megha19.near,Testing Stake,megha19.near,";
+        let expected_first_row = "70,2024-10-04 09:10:17 UTC,Approved,Stake,1.00000,NEAR,astro-stakers.poolv1.near,megha19.near,Testing Stake,megha19.near,";
         assert_eq!(
             lines[1], expected_first_row,
             "First data row does not match"
@@ -56,10 +55,10 @@ mod test {
 
         let lines: Vec<&str> = body.lines().collect();
 
-        let expected_headers = "ID,Created At,Status,Recipient Account,Amount,Token,Start Date,End Date,Cliff Date,Allow Cancellation,Allow Staking,Approvers (Approved),Approvers (Rejected/Remove)";
+        let expected_headers = "ID,Created Date,Status,Recipient Account,Amount,Token,Start Date,End Date,Cliff Date,Allow Cancellation,Allow Staking,Created by,Approvers (Approved),Approvers (Rejected/Remove)";
         assert_eq!(lines[0], expected_headers, "Headers do not match");
 
-        let expected_first_row = "197,2025-03-04 19:24:53 UTC,Approved,rubycop.near,4.00000,NEAR,1970-01-21 03:40:19 UTC,1970-01-21 03:41:45 UTC,1970-01-21 03:40:19 UTC,yes,yes,rubycop.near,";
+        let expected_first_row = "197,2025-03-04 19:24:53 UTC,Approved,rubycop.near,4.00000,NEAR,1970-01-21 03:40:19 UTC,1970-01-21 03:41:45 UTC,1970-01-21 03:40:19 UTC,yes,yes,rubycop.near,rubycop.near,";
         assert_eq!(
             lines[1], expected_first_row,
             "First data row does not match"
@@ -77,10 +76,11 @@ mod test {
 
         let lines: Vec<&str> = body.lines().collect();
 
-        let expected_headers = "ID,Status,Send Amount,Send Token,Receive Amount,Receive Token,Created By,Notes,Approvers (Approved),Approvers (Rejected/Remove)";
+        let expected_headers = "ID,Created Date,Status,Send Amount,Send Token,Receive Amount,Receive Token,Created By,Notes,Approvers (Approved),Approvers (Rejected/Remove)";
         assert_eq!(lines[0], expected_headers, "Headers do not match");
 
-        let expected_first_row = "65,Expired,1,USDC,0.99990,USDt,megha19.near,null,,";
+        let expected_first_row =
+            "65,2024-09-17 10:50:30 UTC,Expired,1,USDC,0.99990,USDt,megha19.near,null,,";
         assert_eq!(
             lines[1], expected_first_row,
             "First data row does not match"
