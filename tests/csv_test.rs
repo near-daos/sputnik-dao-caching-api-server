@@ -101,7 +101,7 @@ mod test {
         let expected_headers = "ID,Created Date,Status,Title,Summary,Recipient,Requested Token,Funding Ask,Created by,Notes,Approvers (Approved),Approvers (Rejected/Remove)";
         assert_eq!(lines[0], expected_headers, "Headers do not match");
 
-        let expected_first_row = "15,2024-08-06 19:34:18 UTC,Rejected,DevHub Activities Report 7/22-8/4,DevHub Moderator Contributions Bi-Weekly Report,joespano.near,,1000000.00000,megha19.near,this is notes,,\"megha19.near, theori.near\"";
+        let expected_first_row = "15,2024-08-06 19:34:18 UTC,Rejected,DevHub Activities Report 7/22-8/4,DevHub Moderator Contributions Bi-Weekly Report,joespano.near,USDC,1.00000,megha19.near,this is notes,,\"megha19.near, theori.near\"";
         assert_eq!(
             lines[1], expected_first_row,
             "First data row does not match"
