@@ -193,12 +193,12 @@ struct LockupArgs {
     whitelist_account_id: Option<String>,
 }
 
-pub trait ProposalCsvFormatterSync: Send + Sync {
+pub trait ProposalCsvFormatterSync<T>: Send + Sync {
     fn headers(&self) -> Vec<&'static str>;
-    fn format(&self, proposal: &Proposal, policy: &Policy) -> Vec<String>;
+    fn format(&self, proposal: &Proposal, policy: &Policy, info: &T) -> Vec<String>;
 }
 
-pub trait ProposalCsvFormatterAsync: Send + Sync {
+pub trait ProposalCsvFormatterAsync<T>: Send + Sync {
     fn headers(&self) -> Vec<&'static str>;
     fn format<'a>(
         &'a self,
@@ -206,36 +206,8 @@ pub trait ProposalCsvFormatterAsync: Send + Sync {
         ft_metadata_cache: &'a FtMetadataCache,
         proposal: &'a Proposal,
         policy: &'a Policy,
+        info: &'a T,
     ) -> BoxFuture<'a, Vec<String>>;
-}
-
-pub enum ProposalFormatter {
-    Sync(Box<dyn ProposalCsvFormatterSync>),
-    Async(Box<dyn ProposalCsvFormatterAsync>),
-}
-
-impl ProposalFormatter {
-    pub fn headers(&self) -> Vec<&'static str> {
-        match self {
-            ProposalFormatter::Sync(f) => f.headers(),
-            ProposalFormatter::Async(f) => f.headers(),
-        }
-    }
-
-    pub async fn format(
-        &self,
-        client: &Arc<JsonRpcClient>,
-        ft_metadata_cache: &FtMetadataCache,
-        proposal: &Proposal,
-        policy: &Policy,
-    ) -> Vec<String> {
-        match self {
-            ProposalFormatter::Sync(f) => f.format(proposal, policy),
-            ProposalFormatter::Async(f) => {
-                f.format(client, ft_metadata_cache, proposal, policy).await
-            }
-        }
-    }
 }
 
 pub async fn fetch_proposals(
@@ -632,7 +604,7 @@ fn format_votes(votes: &HashMap<String, Vote>) -> FormattedVotes {
     formatted
 }
 
-fn extract_from_description(desc: &str, key: &str) -> Option<String> {
+pub fn extract_from_description(desc: &str, key: &str) -> Option<String> {
     let key_normalized = key.to_lowercase().replace(' ', "");
 
     // 1) Try parsing JSON
@@ -658,8 +630,8 @@ fn extract_from_description(desc: &str, key: &str) -> Option<String> {
             let line_content = line.trim_start_matches('*').trim();
             if let Some(pos) = line_content.find(':') {
                 let key_part = line_content[..pos].trim().to_lowercase().replace(' ', "");
+                let val = line_content[pos + 1..].trim();
                 if key_part == key_normalized {
-                    let val = line_content[pos + 1..].trim();
                     return Some(val.to_string());
                 }
             }
@@ -683,26 +655,32 @@ fn get_current_time_nanos() -> U64 {
     U64::from(nanos as u64)
 }
 
-fn get_status_display(status: &ProposalStatus, submission_time: u64, period: u64) -> String {
+pub fn get_status_display(
+    status: &ProposalStatus,
+    submission_time: u64,
+    period: u64,
+    pending_label: &str,
+) -> String {
     match status {
         ProposalStatus::InProgress => {
             let current_time = get_current_time_nanos().0;
             if submission_time + period < current_time {
-                format!("Expired")
+                "Expired".to_string()
             } else {
-                format!("Pending")
+                pending_label.to_string()
             }
         }
         _ => format!("{:?}", status),
     }
 }
 
-impl ProposalCsvFormatterAsync for TransferProposalFormatter {
+impl ProposalCsvFormatterAsync<PaymentInfo> for TransferProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
             "Created Date",
             "Status",
+            "Treasury Wallet",
             "Title",
             "Summary",
             "Recipient",
@@ -714,16 +692,17 @@ impl ProposalCsvFormatterAsync for TransferProposalFormatter {
             "Approvers (Rejected/Remove)",
         ]
     }
+
     fn format<'a>(
         &'a self,
         client: &'a Arc<JsonRpcClient>,
         ft_metadata_cache: &'a FtMetadataCache,
         proposal: &'a Proposal,
         policy: &'a Policy,
+        info: &'a PaymentInfo,
     ) -> BoxFuture<'a, Vec<String>> {
         async move {
             let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
-
             let title =
                 extract_from_description(&proposal.description, "title").unwrap_or_default();
             let summary =
@@ -732,44 +711,18 @@ impl ProposalCsvFormatterAsync for TransferProposalFormatter {
                 extract_from_description(&proposal.description, "notes").unwrap_or_default();
             let description =
                 extract_from_description(&proposal.description, "description").unwrap_or_default();
-
             let status: String = get_status_display(
                 &proposal.status,
                 proposal.submission_time.0,
                 policy.proposal_period.0,
+                "Pending",
             );
             let created_by = proposal.proposer.clone();
-
             let formatted_votes = format_votes(&proposal.votes);
 
-            let kind = &proposal.kind;
-            let transfer = kind.get("Transfer");
-
-            let (requested_token, funding_ask, recipient) = if let Some(transfer_val) = transfer {
-                let token_id = transfer_val
-                    .get("token_id")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or("");
-                let amount = transfer_val
-                    .get("amount")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let receiver = transfer_val
-                    .get("receiver_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                (
-                    token_id.to_string(),
-                    amount.to_string(),
-                    receiver.to_string(),
-                )
-            } else {
-                ("".to_string(), "".to_string(), "".to_string())
-            };
-
+            // Fetch FT metadata for token symbol/decimals
             let ft_metadata =
-                match get_ft_metadata_cache(&client, &ft_metadata_cache, &requested_token).await {
+                match get_ft_metadata_cache(&client, &ft_metadata_cache, &info.token).await {
                     Ok(metadata) => metadata,
                     Err(e) => {
                         eprintln!("Error fetching ft metadata: {}", e);
@@ -777,19 +730,26 @@ impl ProposalCsvFormatterAsync for TransferProposalFormatter {
                     }
                 };
 
+            let treasury_wallet = if info.is_lockup {
+                "Lockup".to_string()
+            } else {
+                "Sputnik DAO".to_string()
+            };
+
             vec![
                 proposal.id.to_string(),
                 created_date,
                 status,
+                treasury_wallet,
                 if !title.is_empty() {
                     title
                 } else {
                     description
                 },
                 summary,
-                recipient,
+                info.receiver.clone(),
                 ft_metadata.symbol,
-                normalize_token_amount(&funding_ask, ft_metadata.decimals.into()),
+                normalize_token_amount(&info.amount, ft_metadata.decimals.into()),
                 created_by,
                 notes,
                 formatted_votes.approved.join(", "),
@@ -827,7 +787,7 @@ fn normalize_token_amount(raw: &str, decimals: u32) -> String {
         .unwrap_or_default()
 }
 
-impl ProposalCsvFormatterSync for LockupProposalFormatter {
+impl ProposalCsvFormatterSync<LockupInfo> for LockupProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
@@ -847,7 +807,7 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
         ]
     }
 
-    fn format(&self, proposal: &Proposal, policy: &Policy) -> Vec<String> {
+    fn format(&self, proposal: &Proposal, policy: &Policy, _info: &LockupInfo) -> Vec<String> {
         let args_opt = extract_args(proposal);
         let args = args_opt.as_ref();
 
@@ -920,15 +880,15 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
         .to_string();
 
         let formatted_votes = format_votes(&proposal.votes);
-
-        let created_date: String = format_ns_timestamp_u64(proposal.submission_time.0);
-
+        let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
         let status: String = get_status_display(
             &proposal.status,
             proposal.submission_time.0,
             policy.proposal_period.0,
+            "Pending",
         );
         let created_by = proposal.proposer.clone();
+
         vec![
             proposal.id.to_string(),
             created_date,
@@ -948,7 +908,7 @@ impl ProposalCsvFormatterSync for LockupProposalFormatter {
     }
 }
 
-impl ProposalCsvFormatterSync for DefaultFormatter {
+impl ProposalCsvFormatterSync<()> for DefaultFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
@@ -961,12 +921,13 @@ impl ProposalCsvFormatterSync for DefaultFormatter {
             "Approvers (Rejected/Remove)",
         ]
     }
-    fn format(&self, proposal: &Proposal, policy: &Policy) -> Vec<String> {
+    fn format(&self, proposal: &Proposal, policy: &Policy, _info: &()) -> Vec<String> {
         let formatted_votes = format_votes(&proposal.votes);
         let status: String = get_status_display(
             &proposal.status,
             proposal.submission_time.0,
             policy.proposal_period.0,
+            "Pending",
         );
         let kind = proposal.kind.clone();
         let created_date: String = format_ns_timestamp_u64(proposal.submission_time.0);
@@ -984,12 +945,13 @@ impl ProposalCsvFormatterSync for DefaultFormatter {
     }
 }
 
-impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
+impl ProposalCsvFormatterAsync<StakeDelegationInfo> for StakeDelegationProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
             "Created Date",
             "Status",
+            "Treasury Wallet",
             "Type",
             "Amount",
             "Token",
@@ -1001,73 +963,150 @@ impl ProposalCsvFormatterSync for StakeDelegationProposalFormatter {
         ]
     }
 
-    fn format(&self, proposal: &Proposal, policy: &Policy) -> Vec<String> {
-        let notes = extract_from_description(&proposal.description, "notes").unwrap_or_default();
-        let receiver_id = proposal
-            .kind
-            .get("FunctionCall")
-            .and_then(|fc| fc.get("receiver_id"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let method_name = extract_action_field(proposal, "method_name").unwrap_or("");
-
-        // returning empty for lockup related stake requests
-        if receiver_id.contains("lockup.near") {
-            return vec![];
-        }
-        // Determine proposal type and amount
-        let (proposal_type, amount) = match method_name {
-            "unstake" => {
-                let amt = extract_action_field(proposal, "args")
-                    .and_then(|args_b64| parse_args::<serde_json::Value>(args_b64))
-                    .and_then(|json| {
-                        json.get("amount")
+    fn format<'a>(
+        &'a self,
+        client: &'a Arc<JsonRpcClient>,
+        _ft_metadata_cache: &'a FtMetadataCache,
+        proposal: &'a Proposal,
+        policy: &'a Policy,
+        _info: &'a StakeDelegationInfo,
+    ) -> BoxFuture<'a, Vec<String>> {
+        async move {
+            let notes =
+                extract_from_description(&proposal.description, "notes").unwrap_or_default();
+            let withdraw_amount =
+                extract_from_description(&proposal.description, "amount").unwrap_or_default();
+            let _custom_notes =
+                extract_from_description(&proposal.description, "customNotes").unwrap_or_default();
+            let receiver_account = proposal
+                .kind
+                .get("FunctionCall")
+                .and_then(|fc| fc.get("receiver_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let actions = proposal
+                .kind
+                .get("FunctionCall")
+                .and_then(|fc| fc.get("actions"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let action = actions.get(0).cloned().unwrap_or_default();
+            let method_name = action
+                .get("method_name")
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            let is_stake_request = method_name == "deposit_and_stake";
+            let mut validator_account = receiver_account.clone();
+            let mut amount = action
+                .get("deposit")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let token = "NEAR".to_string();
+            // If lockup, get validator from args or fetch from RPC
+            if validator_account.contains("lockup.near") {
+                let args_b64 = action.get("args").and_then(|a| a.as_str()).unwrap_or("");
+                let mut found_in_args = false;
+                if let Ok(decoded_bytes) =
+                    base64::engine::general_purpose::STANDARD.decode(args_b64)
+                {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decoded_bytes) {
+                        if let Some(val) =
+                            json.get("staking_pool_account_id").and_then(|v| v.as_str())
+                        {
+                            validator_account = val.to_string();
+                            found_in_args = true;
+                        }
+                        if !is_stake_request {
+                            amount = json
+                                .get("amount")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                        }
+                    }
+                }
+                if !found_in_args {
+                    // Fetch from RPC
+                    if let Some(pool_id) =
+                        crate::rpc_client::get_staking_pool_account_id(client, &validator_account)
+                            .await
+                    {
+                        validator_account = pool_id;
+                    }
+                }
+            } else {
+                let args_b64 = action.get("args").and_then(|a| a.as_str()).unwrap_or("");
+                if let Ok(decoded_bytes) =
+                    base64::engine::general_purpose::STANDARD.decode(args_b64)
+                {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decoded_bytes) {
+                        amount = json
+                            .get("amount")
                             .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .unwrap_or_default();
-                ("Unstake".to_string(), amt)
+                            .unwrap_or("")
+                            .to_string();
+                    }
+                }
             }
-            "deposit_and_stake" => {
-                let amt = extract_action_field(proposal, "deposit")
-                    .unwrap_or("")
-                    .to_string();
-                ("Stake".to_string(), amt)
+            let is_withdraw_request =
+                method_name == "withdraw_all_from_staking_pool" || method_name == "withdraw_all";
+            if is_withdraw_request {
+                amount = withdraw_amount.clone();
             }
-            "withdraw_all" => {
-                let amt =
-                    extract_from_description(&proposal.description, "Amount").unwrap_or_default();
-                ("Withdraw".to_string(), amt)
-            }
-            _ => ("Unknown".to_string(), "".to_string()),
-        };
-        let parsed_amount = format!("{}", normalize_token_amount(&amount, 24));
-
-        let formatted_votes = format_votes(&proposal.votes);
-        let status: String = get_status_display(
-            &proposal.status,
-            proposal.submission_time.0,
-            policy.proposal_period.0,
-        );
-        let created_date: String = format_ns_timestamp_u64(proposal.submission_time.0);
-        vec![
-            proposal.id.to_string(),
-            created_date,
-            status,
-            proposal_type,
-            parsed_amount,
-            "NEAR".to_string(),
-            receiver_id.to_string(),
-            proposal.proposer.clone(),
-            notes,
-            formatted_votes.approved.join(", "),
-            formatted_votes.rejected.join(", "),
-        ]
+            let is_lockup = receiver_account.contains("lockup.near");
+            let treasury_wallet = if is_lockup {
+                "Lockup".to_string()
+            } else {
+                "Sputnik DAO".to_string()
+            };
+            let proposal_type = if method_name == "unstake" {
+                "Unstake"
+            } else if method_name == "deposit_and_stake" {
+                "Stake"
+            } else if method_name == "withdraw_all"
+                || method_name == "withdraw_all_from_staking_pool"
+            {
+                "Withdraw"
+            } else if method_name == "select_staking_pool" {
+                "Whitelist"
+            } else if method_name == "unselect_staking_pool" {
+                "Unselect"
+            } else {
+                "Unknown"
+            };
+            let parsed_amount = format!("{}", normalize_token_amount(&amount, 24));
+            let formatted_votes = format_votes(&proposal.votes);
+            let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
+            let status: String = get_status_display(
+                &proposal.status,
+                proposal.submission_time.0,
+                policy.proposal_period.0,
+                "Pending",
+            );
+            let created_by = proposal.proposer.clone();
+            vec![
+                proposal.id.to_string(),
+                created_date,
+                status,
+                treasury_wallet,
+                proposal_type.to_string(),
+                parsed_amount,
+                token,
+                validator_account,
+                created_by,
+                notes,
+                formatted_votes.approved.join(", "),
+                formatted_votes.rejected.join(", "),
+            ]
+        }
+        .boxed()
     }
 }
 
-impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
+impl ProposalCsvFormatterAsync<AssetExchangeInfo> for AssetExchangeProposalFormatter {
     fn headers(&self) -> Vec<&'static str> {
         vec![
             "ID",
@@ -1090,6 +1129,7 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
         ft_metadata_cache: &'a FtMetadataCache,
         proposal: &'a Proposal,
         policy: &'a Policy,
+        _info: &'a AssetExchangeInfo,
     ) -> BoxFuture<'a, Vec<String>> {
         async move {
             let proposal_id = proposal.id.to_string();
@@ -1110,6 +1150,7 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
                 &proposal.status,
                 proposal.submission_time.0,
                 policy.proposal_period.0,
+                "Pending",
             );
             let ft_meta_send =
                 match get_ft_metadata_cache(&client, &ft_metadata_cache, &send_token).await {
@@ -1144,5 +1185,323 @@ impl ProposalCsvFormatterAsync for AssetExchangeProposalFormatter {
             ]
         }
         .boxed()
+    }
+}
+
+pub trait ProposalType {
+    /// Attempts to extract proposal-specific information from a proposal.
+    /// Returns None if the proposal doesn't match this type.
+    fn from_proposal(proposal: &Proposal) -> Option<Self>
+    where
+        Self: Sized;
+
+    /// Returns the category name as a string constant.
+    fn category_name() -> &'static str;
+}
+
+#[derive(Debug, Clone)]
+pub struct PaymentInfo {
+    pub receiver: String,
+    pub token: String,
+    pub amount: String,
+    pub is_lockup: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct LockupInfo;
+
+#[derive(Debug, Clone)]
+pub struct AssetExchangeInfo;
+
+#[derive(Debug, Clone)]
+pub struct StakeDelegationInfo;
+
+impl ProposalType for PaymentInfo {
+    fn from_proposal(proposal: &Proposal) -> Option<Self> {
+        // Transfer kind
+        if let Some(transfer_val) = proposal.kind.get("Transfer") {
+            let token = transfer_val
+                .get("token_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let amount = transfer_val
+                .get("amount")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let receiver = transfer_val
+                .get("receiver_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            return Some(PaymentInfo {
+                receiver,
+                token,
+                amount,
+                is_lockup: false,
+            });
+        }
+        // FunctionCall kind
+        if let Some(function_call) = proposal.kind.get("FunctionCall") {
+            let receiver_id = function_call
+                .get("receiver_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let actions: &[serde_json::Value] = function_call
+                .get("actions")
+                .and_then(|a| a.as_array())
+                .map(|a| a.as_slice())
+                .unwrap_or(&[]);
+            // Intents payment
+            if receiver_id == "intents.near"
+                && actions
+                    .get(0)
+                    .and_then(|a| a.get("method_name"))
+                    .and_then(|m| m.as_str())
+                    == Some("ft_withdraw")
+            {
+                if let Some(args_b64) = actions
+                    .get(0)
+                    .and_then(|a| a.get("args"))
+                    .and_then(|a| a.as_str())
+                {
+                    if let Ok(decoded_bytes) =
+                        base64::engine::general_purpose::STANDARD.decode(args_b64)
+                    {
+                        if let Ok(json_args) =
+                            serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
+                        {
+                            let token = json_args
+                                .get("token")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let amount = json_args
+                                .get("amount")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let receiver = if let Some(memo) =
+                                json_args.get("memo").and_then(|v| v.as_str())
+                            {
+                                if memo.contains("WITHDRAW_TO:") {
+                                    memo.split("WITHDRAW_TO:").nth(1).unwrap_or("").to_string()
+                                } else {
+                                    json_args
+                                        .get("receiver_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string()
+                                }
+                            } else {
+                                json_args
+                                    .get("receiver_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string()
+                            };
+                            return Some(PaymentInfo {
+                                receiver,
+                                token,
+                                amount,
+                                is_lockup: false,
+                            });
+                        }
+                    }
+                }
+            }
+            // Lockup contract transfer
+            let method_name = actions
+                .get(0)
+                .and_then(|a| a.get("method_name"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+            if method_name == "transfer" && receiver_id.contains("lockup.near") {
+                if let Some(args_b64) = actions
+                    .get(0)
+                    .and_then(|a| a.get("args"))
+                    .and_then(|a| a.as_str())
+                {
+                    if let Ok(decoded_bytes) =
+                        base64::engine::general_purpose::STANDARD.decode(args_b64)
+                    {
+                        if let Ok(json_args) =
+                            serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
+                        {
+                            let token = json_args
+                                .get("token_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let amount = json_args
+                                .get("amount")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let receiver = json_args
+                                .get("receiver_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            return Some(PaymentInfo {
+                                receiver,
+                                token,
+                                amount,
+                                is_lockup: true,
+                            });
+                        }
+                    }
+                }
+            }
+            // NEARN requests: storage_deposit + ft_transfer
+            if actions.len() >= 2
+                && actions
+                    .get(0)
+                    .and_then(|a| a.get("method_name"))
+                    .and_then(|m| m.as_str())
+                    == Some("storage_deposit")
+                && actions
+                    .get(1)
+                    .and_then(|a| a.get("method_name"))
+                    .and_then(|m| m.as_str())
+                    == Some("ft_transfer")
+            {
+                let token = receiver_id.to_string();
+                if let Some(args_b64) = actions
+                    .get(1)
+                    .and_then(|a| a.get("args"))
+                    .and_then(|a| a.as_str())
+                {
+                    if let Ok(decoded_bytes) =
+                        base64::engine::general_purpose::STANDARD.decode(args_b64)
+                    {
+                        if let Ok(json_args) =
+                            serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
+                        {
+                            let receiver = json_args
+                                .get("receiver_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let amount = json_args
+                                .get("amount")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            return Some(PaymentInfo {
+                                receiver,
+                                token,
+                                amount,
+                                is_lockup: false,
+                            });
+                        }
+                    }
+                }
+            }
+            // Standard ft_transfer
+            if actions
+                .get(0)
+                .and_then(|a| a.get("method_name"))
+                .and_then(|m| m.as_str())
+                == Some("ft_transfer")
+            {
+                let token = receiver_id.to_string();
+                if let Some(args_b64) = actions
+                    .get(0)
+                    .and_then(|a| a.get("args"))
+                    .and_then(|a| a.as_str())
+                {
+                    if let Ok(decoded_bytes) =
+                        base64::engine::general_purpose::STANDARD.decode(args_b64)
+                    {
+                        if let Ok(json_args) =
+                            serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
+                        {
+                            let receiver = json_args
+                                .get("receiver_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let amount = json_args
+                                .get("amount")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            return Some(PaymentInfo {
+                                receiver,
+                                token,
+                                amount,
+                                is_lockup: false,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn category_name() -> &'static str {
+        "payments"
+    }
+}
+
+impl ProposalType for LockupInfo {
+    fn from_proposal(proposal: &Proposal) -> Option<Self> {
+        if let Some(function_call) = proposal.kind.get("FunctionCall") {
+            let receiver_id = function_call
+                .get("receiver_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if receiver_id.contains("lockup.near") {
+                return Some(LockupInfo);
+            }
+        }
+        None
+    }
+
+    fn category_name() -> &'static str {
+        "lockup"
+    }
+}
+
+impl ProposalType for AssetExchangeInfo {
+    fn from_proposal(proposal: &Proposal) -> Option<Self> {
+        if let Some(_function_call) = proposal.kind.get("FunctionCall") {
+            if extract_from_description(&proposal.description, "proposalaction")
+                == Some("asset-exchange".to_string())
+            {
+                return Some(AssetExchangeInfo);
+            }
+        }
+        None
+    }
+
+    fn category_name() -> &'static str {
+        "asset-exchange"
+    }
+}
+
+impl ProposalType for StakeDelegationInfo {
+    fn from_proposal(proposal: &Proposal) -> Option<Self> {
+        if let Some(_function_call) = proposal.kind.get("FunctionCall") {
+            let proposal_action = extract_from_description(&proposal.description, "proposalaction");
+            let is_stake_request =
+                extract_from_description(&proposal.description, "isStakeRequest").is_some()
+                    || match proposal_action.as_deref() {
+                        Some("stake") | Some("unstake") | Some("withdraw") => true,
+                        _ => false,
+                    };
+
+            if is_stake_request {
+                return Some(StakeDelegationInfo);
+            }
+        }
+        None
+    }
+
+    fn category_name() -> &'static str {
+        "stake-delegation"
     }
 }

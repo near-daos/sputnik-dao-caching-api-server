@@ -1,4 +1,7 @@
-use crate::scraper::{CountsVersions, Policy, Proposal, ProposalStatus};
+use crate::scraper::{
+    AssetExchangeInfo, CountsVersions, LockupInfo, PaymentInfo, Policy, Proposal, ProposalStatus,
+    ProposalType, StakeDelegationInfo, get_status_display,
+};
 use anyhow::{Result, anyhow};
 use rocket::form::{FromForm, FromFormField};
 use rocket::serde::Deserialize;
@@ -7,6 +10,13 @@ use rocket::serde::Deserialize;
 enum SortBy {
     CreationTime,
     ExpiryTime,
+}
+
+pub mod categories {
+    pub const PAYMENTS: &str = "payments";
+    pub const LOCKUP: &str = "lockup";
+    pub const ASSET_EXCHANGE: &str = "asset-exchange";
+    pub const STAKE_DELEGATION: &str = "stake-delegation";
 }
 
 #[derive(Deserialize, FromForm)]
@@ -19,6 +29,7 @@ pub struct ProposalFilters {
     approvers: Option<Vec<String>>,
     sort_by: Option<SortBy>,
     sort_direction: Option<String>,
+    pub category: Option<String>,
 }
 
 impl ProposalFilters {
@@ -26,8 +37,14 @@ impl ProposalFilters {
         let mut filtered_proposals = proposals
             .into_iter()
             .filter(|proposal| {
-                if let Some(status) = &self.status {
-                    if proposal.status != *status {
+                if let Some(expected_status) = &self.status {
+                    let computed_status = get_status_display(
+                        &proposal.status,
+                        proposal.submission_time.0,
+                        policy.proposal_period.0,
+                        "In Progress",
+                    );
+                    if computed_status != format!("{:?}", expected_status) {
                         return false;
                     }
                 }
@@ -85,6 +102,29 @@ impl ProposalFilters {
                     }
                 }
 
+                if let Some(category) = self.category.as_deref() {
+                    if category == categories::PAYMENTS
+                        && PaymentInfo::from_proposal(proposal).is_none()
+                    {
+                        return false;
+                    }
+                    if category == categories::LOCKUP
+                        && LockupInfo::from_proposal(proposal).is_none()
+                    {
+                        return false;
+                    }
+                    if category == categories::ASSET_EXCHANGE
+                        && AssetExchangeInfo::from_proposal(proposal).is_none()
+                    {
+                        return false;
+                    }
+                    if category == categories::STAKE_DELEGATION
+                        && StakeDelegationInfo::from_proposal(proposal).is_none()
+                    {
+                        return false;
+                    }
+                }
+
                 // If we reach here, all filters have passed
                 true
             })
@@ -121,6 +161,16 @@ impl ProposalFilters {
         };
 
         filtered_proposals
+    }
+
+    pub fn filter_and_extract<T: ProposalType>(
+        &self,
+        proposals: Vec<Proposal>,
+    ) -> Vec<(Proposal, T)> {
+        proposals
+            .into_iter()
+            .filter_map(|proposal| T::from_proposal(&proposal).map(|info| (proposal, info)))
+            .collect()
     }
 }
 

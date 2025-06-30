@@ -19,11 +19,13 @@ use std::sync::{Arc, RwLock};
 use cache::{
     FtMetadataCache, ProposalCache, ProposalStore, get_latest_dao_cache, get_latest_proposal_cache,
 };
-use filters::ProposalFilters;
+use filters::{ProposalFilters, categories};
 use persistence::{CachePersistence, read_cache_from_file};
 use scraper::{
-    AssetExchangeProposalFormatter, DefaultFormatter, LockupProposalFormatter, Proposal,
-    ProposalFormatter, StakeDelegationProposalFormatter, TransferProposalFormatter, TxMetadata,
+    AssetExchangeInfo, AssetExchangeProposalFormatter, DefaultFormatter, LockupInfo,
+    LockupProposalFormatter, PaymentInfo, Proposal, ProposalCsvFormatterAsync,
+    ProposalCsvFormatterSync, StakeDelegationInfo, StakeDelegationProposalFormatter,
+    TransferProposalFormatter, TxMetadata,
 };
 
 use rocket::Request;
@@ -107,49 +109,129 @@ pub async fn csv_proposals(
         return Err(Status::BadRequest);
     }
     let client = rpc_client::get_rpc_client();
-    let cached = get_latest_dao_cache(
-        &client,
-        &store,
-        &dao_id.parse().map_err(|_| Status::BadRequest)?,
-    )
-    .await
-    .map_err(|_| Status::NotFound)?;
+    let dao_id_account = dao_id.parse().map_err(|_| Status::BadRequest)?;
+    let cached = get_latest_dao_cache(&client, &store, &dao_id_account)
+        .await
+        .map_err(|_| Status::NotFound)?;
 
-    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
-
-    let proposal_types = filters.proposal_type.as_deref().unwrap_or(&[]);
-    let keyword_lower = filters.keyword.as_ref().map(|k| k.to_lowercase());
-
-    let is_type = |t: &str| proposal_types.iter().any(|pt| pt == t);
-
-    let formatter = match keyword_lower.as_deref() {
-        Some(keyword) if is_type("FunctionCall") && keyword.contains("lockup") => {
-            ProposalFormatter::Sync(Box::new(LockupProposalFormatter))
+    // Check if DAO has a lockup account (for payments or stake delegation category)
+    let has_lockup_account = match filters.category.as_deref() {
+        Some(categories::PAYMENTS) | Some(categories::STAKE_DELEGATION) => {
+            rpc_client::account_to_lockup(&client, dao_id)
+                .await
+                .is_some()
         }
-        Some(keyword) if is_type("FunctionCall") && keyword.contains("asset") => {
-            ProposalFormatter::Async(Box::new(AssetExchangeProposalFormatter))
-        }
-        Some(keyword) if is_type("FunctionCall") && keyword.contains("stake") => {
-            ProposalFormatter::Sync(Box::new(StakeDelegationProposalFormatter))
-        }
-        _ if is_type("Transfer") => ProposalFormatter::Async(Box::new(TransferProposalFormatter)),
-        _ => ProposalFormatter::Sync(Box::new(DefaultFormatter)),
+        _ => false,
     };
 
     let mut wtr = csv::Writer::from_writer(vec![]);
-    wtr.write_record(&formatter.headers()).unwrap();
 
-    for proposal in filtered_proposals {
-        let record = formatter
-            .format(&client, &ft_metadata_cache, &proposal, &cached.policy)
-            .await;
-
-        // Skip empty records (lockup requests)
-        if record.is_empty() {
-            continue;
+    match filters.category.as_deref() {
+        Some(categories::PAYMENTS) => {
+            let extracted = filters.filter_and_extract::<PaymentInfo>(cached.proposals);
+            let formatter = TransferProposalFormatter;
+            let mut headers = formatter.headers();
+            if !has_lockup_account {
+                if let Some(index) = headers.iter().position(|&h| h == "Treasury Wallet") {
+                    headers.remove(index);
+                }
+            }
+            wtr.write_record(&headers).unwrap();
+            for (proposal, payment_info) in extracted {
+                let mut record = formatter
+                    .format(
+                        &client,
+                        &ft_metadata_cache,
+                        &proposal,
+                        &cached.policy,
+                        &payment_info,
+                    )
+                    .await;
+                if record.is_empty() {
+                    continue;
+                }
+                if !has_lockup_account && record.len() > 3 {
+                    record.remove(3);
+                }
+                wtr.write_record(&record).unwrap();
+            }
         }
-
-        wtr.write_record(&record).unwrap();
+        Some(categories::LOCKUP) => {
+            let extracted = filters.filter_and_extract::<LockupInfo>(cached.proposals);
+            let formatter = LockupProposalFormatter;
+            let headers = formatter.headers();
+            wtr.write_record(&headers).unwrap();
+            for (proposal, lockup_info) in extracted {
+                let record = formatter.format(&proposal, &cached.policy, &lockup_info);
+                if record.is_empty() {
+                    continue;
+                }
+                wtr.write_record(&record).unwrap();
+            }
+        }
+        Some(categories::ASSET_EXCHANGE) => {
+            let extracted = filters.filter_and_extract::<AssetExchangeInfo>(cached.proposals);
+            let formatter = AssetExchangeProposalFormatter;
+            let headers = formatter.headers();
+            wtr.write_record(&headers).unwrap();
+            for (proposal, asset_info) in extracted {
+                let record = formatter
+                    .format(
+                        &client,
+                        &ft_metadata_cache,
+                        &proposal,
+                        &cached.policy,
+                        &asset_info,
+                    )
+                    .await;
+                if record.is_empty() {
+                    continue;
+                }
+                wtr.write_record(&record).unwrap();
+            }
+        }
+        Some(categories::STAKE_DELEGATION) => {
+            let extracted = filters.filter_and_extract::<StakeDelegationInfo>(cached.proposals);
+            let formatter = StakeDelegationProposalFormatter;
+            let mut headers = formatter.headers();
+            if !has_lockup_account {
+                if let Some(index) = headers.iter().position(|&h| h == "Treasury Wallet") {
+                    headers.remove(index);
+                }
+            }
+            wtr.write_record(&headers).unwrap();
+            for (proposal, stake_info) in extracted {
+                let mut record = formatter
+                    .format(
+                        &client,
+                        &ft_metadata_cache,
+                        &proposal,
+                        &cached.policy,
+                        &stake_info,
+                    )
+                    .await;
+                if record.is_empty() {
+                    continue;
+                }
+                if !has_lockup_account && record.len() > 3 {
+                    record.remove(3);
+                }
+                wtr.write_record(&record).unwrap();
+            }
+        }
+        _ => {
+            // Default: use the old logic for other categories
+            let formatter = DefaultFormatter;
+            let headers = formatter.headers();
+            wtr.write_record(&headers).unwrap();
+            for proposal in filters.filter_proposals(cached.proposals, &cached.policy) {
+                let record = formatter.format(&proposal, &cached.policy, &());
+                if record.is_empty() {
+                    continue;
+                }
+                wtr.write_record(&record).unwrap();
+            }
+        }
     }
 
     let data = String::from_utf8(wtr.into_inner().unwrap()).unwrap();
