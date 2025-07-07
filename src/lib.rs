@@ -41,12 +41,20 @@ pub struct ProposalOutput {
     pub txs_log: Vec<TxMetadata>,
 }
 
+#[derive(Serialize)]
+pub struct PaginatedProposals {
+    pub proposals: Vec<Proposal>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+}
+
 #[get("/proposals/<dao_id>?<filters..>")]
 pub async fn get_dao_proposals(
     dao_id: &str,
     filters: ProposalFilters,
     store: &State<ProposalStore>,
-) -> Result<Json<Vec<Proposal>>, Status> {
+) -> Result<Json<PaginatedProposals>, Status> {
     let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
 
@@ -59,7 +67,30 @@ pub async fn get_dao_proposals(
     };
     let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
 
-    Ok(Json(filtered_proposals))
+    let page = filters.page;
+    let page_size = filters.page_size;
+    let total = filtered_proposals.len();
+
+    let paginated: Vec<Proposal> = match (page, page_size) {
+        (Some(page), Some(page_size)) => {
+            let page = page + 1; // 0-based to 1-based
+            let start = (page - 1) * page_size;
+            let end = start + page_size;
+            if start < total {
+                filtered_proposals[start..filtered_proposals.len().min(end)].to_vec()
+            } else {
+                vec![]
+            }
+        }
+        _ => filtered_proposals.clone(),
+    };
+
+    Ok(Json(PaginatedProposals {
+        proposals: paginated,
+        total,
+        page: page.unwrap_or(1),
+        page_size: page_size.unwrap_or(total),
+    }))
 }
 
 #[get("/proposals/<dao_id>/<proposal_id>")]
@@ -259,6 +290,7 @@ pub fn rocket() -> rocket::Rocket<rocket::Build> {
         .allowed_origins(AllowedOrigins::some_exact(&[
             "http://localhost:8080",
             "http://localhost:5001",
+            "http://127.0.0.1:8080",
             "https://sputnik-indexer-divine-fog-3863.fly.dev",
             "https://sputnik-indexer.fly.dev",
         ]))

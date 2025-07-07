@@ -1454,7 +1454,14 @@ impl ProposalType for LockupInfo {
                 .get("receiver_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if receiver_id.contains("lockup.near") {
+            let actions = function_call.get("actions").and_then(|a| a.as_array());
+            let method_is_create = actions
+                .and_then(|arr| arr.get(0))
+                .and_then(|action| action.get("method_name"))
+                .and_then(|m| m.as_str())
+                .map(|m| m == "create")
+                .unwrap_or(false);
+            if receiver_id.contains("lockup.near") && method_is_create {
                 return Some(LockupInfo);
             }
         }
