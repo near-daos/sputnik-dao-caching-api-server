@@ -1,6 +1,6 @@
 use crate::scraper::{
-    AssetExchangeInfo, CountsVersions, LockupInfo, PaymentInfo, Policy, Proposal, ProposalStatus,
-    ProposalType, StakeDelegationInfo, get_status_display,
+    AssetExchangeInfo, CountsVersions, LockupInfo, PaymentInfo, Policy, Proposal, ProposalType,
+    StakeDelegationInfo, get_status_display,
 };
 use anyhow::{Result, anyhow};
 use rocket::form::{FromForm, FromFormField};
