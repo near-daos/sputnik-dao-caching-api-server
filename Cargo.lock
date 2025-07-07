@@ -2703,6 +2703,7 @@ dependencies = [
  "csv",
  "dotenvy",
  "futures",
+ "hex",
  "near-jsonrpc-client",
  "near-jsonrpc-primitives",
  "near-primitives",
@@ -2713,6 +2714,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "sha2",
  "tokio",
 ]
 
