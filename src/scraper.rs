@@ -1218,6 +1218,9 @@ pub struct StakeDelegationInfo;
 
 impl ProposalType for PaymentInfo {
     fn from_proposal(proposal: &Proposal) -> Option<Self> {
+        if proposal.kind.get("Transfer").is_none() && proposal.kind.get("FunctionCall").is_none() {
+            return None;
+        }
         // Transfer kind
         if let Some(transfer_val) = proposal.kind.get("Transfer") {
             let token = transfer_val
