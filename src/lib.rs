@@ -2,9 +2,9 @@
 extern crate rocket;
 mod cache;
 mod csv_view;
-mod filters;
+pub mod filters;
 mod persistence;
-mod rpc_client;
+pub mod rpc_client;
 pub mod scraper;
 
 use near_primitives::types::AccountId;
@@ -58,6 +58,7 @@ pub async fn get_dao_proposals(
     let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
 
+    // Get cached data
     let cached = match get_latest_dao_cache(&client, &store, &dao_id).await {
         Ok(cache) => cache,
         Err(e) => {
@@ -65,17 +66,18 @@ pub async fn get_dao_proposals(
             return Err(Status::NotFound);
         }
     };
-    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
 
-    let page = filters.page;
-    let page_size = filters.page_size;
+    // Apply filters
+    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
     let total = filtered_proposals.len();
 
-    let paginated: Vec<Proposal> = match (page, page_size) {
+    // Handle pagination
+    let paginated: Vec<Proposal> = match (filters.page, filters.page_size) {
         (Some(page), Some(page_size)) => {
-            let page = page + 1; // 0-based to 1-based
-            let start = (page - 1) * page_size;
+            // Frontend sends 0-based page numbers
+            let start = page * page_size;
             let end = start + page_size;
+
             if start < total {
                 filtered_proposals[start..filtered_proposals.len().min(end)].to_vec()
             } else {
@@ -88,8 +90,8 @@ pub async fn get_dao_proposals(
     Ok(Json(PaginatedProposals {
         proposals: paginated,
         total,
-        page: page.unwrap_or(1),
-        page_size: page_size.unwrap_or(total),
+        page: filters.page.unwrap_or(1),
+        page_size: filters.page_size.unwrap_or(total),
     }))
 }
 
@@ -139,8 +141,11 @@ pub async fn csv_proposals(
     if dao_id.is_empty() {
         return Err(Status::BadRequest);
     }
+
     let client = rpc_client::get_rpc_client();
     let dao_id_account = dao_id.parse().map_err(|_| Status::BadRequest)?;
+
+    // Get cached data
     let cached = get_latest_dao_cache(&client, &store, &dao_id_account)
         .await
         .map_err(|_| Status::NotFound)?;
@@ -157,6 +162,17 @@ pub async fn csv_proposals(
 
     let mut wtr = csv::Writer::from_writer(vec![]);
 
+    // Helper functions to write CSV records with error handling
+    let write_headers = |wtr: &mut csv::Writer<Vec<u8>>, headers: &[&str]| -> Result<(), Status> {
+        wtr.write_record(headers)
+            .map_err(|_| Status::InternalServerError)
+    };
+
+    let write_record = |wtr: &mut csv::Writer<Vec<u8>>, record: &[String]| -> Result<(), Status> {
+        wtr.write_record(record)
+            .map_err(|_| Status::InternalServerError)
+    };
+
     match filters.category.as_deref() {
         Some(categories::PAYMENTS) => {
             let extracted = filters.filter_and_extract::<PaymentInfo>(cached.proposals);
@@ -167,7 +183,7 @@ pub async fn csv_proposals(
                     headers.remove(index);
                 }
             }
-            wtr.write_record(&headers).unwrap();
+            write_headers(&mut wtr, &headers)?;
             for (proposal, payment_info) in extracted {
                 let mut record = formatter
                     .format(
@@ -184,27 +200,27 @@ pub async fn csv_proposals(
                 if !has_lockup_account && record.len() > 3 {
                     record.remove(3);
                 }
-                wtr.write_record(&record).unwrap();
+                write_record(&mut wtr, &record)?;
             }
         }
         Some(categories::LOCKUP) => {
             let extracted = filters.filter_and_extract::<LockupInfo>(cached.proposals);
             let formatter = LockupProposalFormatter;
             let headers = formatter.headers();
-            wtr.write_record(&headers).unwrap();
+            write_headers(&mut wtr, &headers)?;
             for (proposal, lockup_info) in extracted {
                 let record = formatter.format(&proposal, &cached.policy, &lockup_info);
                 if record.is_empty() {
                     continue;
                 }
-                wtr.write_record(&record).unwrap();
+                write_record(&mut wtr, &record)?;
             }
         }
         Some(categories::ASSET_EXCHANGE) => {
             let extracted = filters.filter_and_extract::<AssetExchangeInfo>(cached.proposals);
             let formatter = AssetExchangeProposalFormatter;
             let headers = formatter.headers();
-            wtr.write_record(&headers).unwrap();
+            write_headers(&mut wtr, &headers)?;
             for (proposal, asset_info) in extracted {
                 let record = formatter
                     .format(
@@ -218,7 +234,7 @@ pub async fn csv_proposals(
                 if record.is_empty() {
                     continue;
                 }
-                wtr.write_record(&record).unwrap();
+                write_record(&mut wtr, &record)?;
             }
         }
         Some(categories::STAKE_DELEGATION) => {
@@ -230,7 +246,7 @@ pub async fn csv_proposals(
                     headers.remove(index);
                 }
             }
-            wtr.write_record(&headers).unwrap();
+            write_headers(&mut wtr, &headers)?;
             for (proposal, stake_info) in extracted {
                 let mut record = formatter
                     .format(
@@ -247,25 +263,26 @@ pub async fn csv_proposals(
                 if !has_lockup_account && record.len() > 3 {
                     record.remove(3);
                 }
-                wtr.write_record(&record).unwrap();
+                write_record(&mut wtr, &record)?;
             }
         }
         _ => {
             // Default: use the old logic for other categories
             let formatter = DefaultFormatter;
             let headers = formatter.headers();
-            wtr.write_record(&headers).unwrap();
+            write_headers(&mut wtr, &headers)?;
             for proposal in filters.filter_proposals(cached.proposals, &cached.policy) {
                 let record = formatter.format(&proposal, &cached.policy, &());
                 if record.is_empty() {
                     continue;
                 }
-                wtr.write_record(&record).unwrap();
+                write_record(&mut wtr, &record)?;
             }
         }
     }
 
-    let data = String::from_utf8(wtr.into_inner().unwrap()).unwrap();
+    let data = String::from_utf8(wtr.into_inner().map_err(|_| Status::InternalServerError)?)
+        .map_err(|_| Status::InternalServerError)?;
 
     Ok(CsvFile {
         content: data,
