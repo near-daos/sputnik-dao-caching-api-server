@@ -1,4 +1,7 @@
-use crate::scraper::{CountsVersions, Policy, Proposal, ProposalStatus};
+use crate::scraper::{
+    AssetExchangeInfo, CountsVersions, LockupInfo, PaymentInfo, Policy, Proposal, ProposalType,
+    StakeDelegationInfo, get_status_display,
+};
 use anyhow::{Result, anyhow};
 use rocket::form::{FromForm, FromFormField};
 use rocket::serde::Deserialize;
@@ -9,16 +12,27 @@ enum SortBy {
     ExpiryTime,
 }
 
-#[derive(Deserialize, FromForm)]
+pub mod categories {
+    pub const PAYMENTS: &str = "payments";
+    pub const LOCKUP: &str = "lockup";
+    pub const ASSET_EXCHANGE: &str = "asset-exchange";
+    pub const STAKE_DELEGATION: &str = "stake-delegation";
+}
+
+#[derive(Deserialize, FromForm, Default)]
 pub struct ProposalFilters {
-    status: Option<ProposalStatus>,
+    pub status: Option<String>,
     pub keyword: Option<String>,
     proposer: Option<String>,
-    pub proposal_type: Option<Vec<String>>,
+    pub proposal_type: Option<String>,
     min_votes: Option<usize>,
     approvers: Option<Vec<String>>,
     sort_by: Option<SortBy>,
     sort_direction: Option<String>,
+    pub category: Option<String>,
+    // Pagination
+    pub page: Option<usize>,
+    pub page_size: Option<usize>,
 }
 
 impl ProposalFilters {
@@ -26,8 +40,33 @@ impl ProposalFilters {
         let mut filtered_proposals = proposals
             .into_iter()
             .filter(|proposal| {
-                if let Some(status) = &self.status {
-                    if proposal.status != *status {
+                if let Some(status_str) = &self.status {
+                    let statuses: Vec<&str> = status_str
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let computed_status = get_status_display(
+                        &proposal.status,
+                        proposal.submission_time.0,
+                        policy.proposal_period.0,
+                        "InProgress",
+                    );
+                    let matched = statuses.iter().any(|status| computed_status == *status);
+                    if !matched {
+                        return false;
+                    }
+                }
+                if let Some(types_str) = &self.proposal_type {
+                    let types: Vec<&str> = types_str
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    let matched = types
+                        .iter()
+                        .any(|pt| filter_proposal_type(pt, proposal).unwrap_or(false));
+                    if !matched {
                         return false;
                     }
                 }
@@ -69,18 +108,31 @@ impl ProposalFilters {
                     }
                 }
 
-                if let Some(types) = &self.proposal_type {
-                    if types
-                        .iter()
-                        .all(|pt| filter_proposal_type(pt, proposal).unwrap_or(false))
-                        != true
-                    {
+                if let Some(min) = self.min_votes {
+                    if proposal.votes.len() < min {
                         return false;
                     }
                 }
 
-                if let Some(min) = self.min_votes {
-                    if proposal.votes.len() < min {
+                if let Some(category) = self.category.as_deref() {
+                    if category == categories::PAYMENTS
+                        && PaymentInfo::from_proposal(proposal).is_none()
+                    {
+                        return false;
+                    }
+                    if category == categories::LOCKUP
+                        && LockupInfo::from_proposal(proposal).is_none()
+                    {
+                        return false;
+                    }
+                    if category == categories::ASSET_EXCHANGE
+                        && AssetExchangeInfo::from_proposal(proposal).is_none()
+                    {
+                        return false;
+                    }
+                    if category == categories::STAKE_DELEGATION
+                        && StakeDelegationInfo::from_proposal(proposal).is_none()
+                    {
                         return false;
                     }
                 }
@@ -122,6 +174,16 @@ impl ProposalFilters {
 
         filtered_proposals
     }
+
+    pub fn filter_and_extract<T: ProposalType>(
+        &self,
+        proposals: Vec<Proposal>,
+    ) -> Vec<(Proposal, T)> {
+        proposals
+            .into_iter()
+            .filter_map(|proposal| T::from_proposal(&proposal).map(|info| (proposal, info)))
+            .collect()
+    }
 }
 
 fn filter_proposal_type(proposal_type: &str, proposal: &Proposal) -> Result<bool> {
@@ -141,7 +203,6 @@ fn filter_proposal_type(proposal_type: &str, proposal: &Proposal) -> Result<bool
     if last_index != parts.len() - 1 {
         let command = &parts[last_index + 1][0..1];
         let value = &parts[last_index + 1][1..];
-        println!("c: {}, v: {}", command, value);
         match command {
             "=" => Ok(json_path.eq(value)),
             "<" => Ok(json_path

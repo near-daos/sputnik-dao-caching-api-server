@@ -2,9 +2,9 @@
 extern crate rocket;
 mod cache;
 mod csv_view;
-mod filters;
+pub mod filters;
 mod persistence;
-mod rpc_client;
+pub mod rpc_client;
 pub mod scraper;
 
 use near_primitives::types::AccountId;
@@ -19,11 +19,13 @@ use std::sync::{Arc, RwLock};
 use cache::{
     FtMetadataCache, ProposalCache, ProposalStore, get_latest_dao_cache, get_latest_proposal_cache,
 };
-use filters::ProposalFilters;
+use filters::{ProposalFilters, categories};
 use persistence::{CachePersistence, read_cache_from_file};
 use scraper::{
-    AssetExchangeProposalFormatter, DefaultFormatter, LockupProposalFormatter, Proposal,
-    ProposalFormatter, StakeDelegationProposalFormatter, TransferProposalFormatter, TxMetadata,
+    AssetExchangeInfo, AssetExchangeProposalFormatter, DefaultFormatter, LockupInfo,
+    LockupProposalFormatter, PaymentInfo, Proposal, ProposalCsvFormatterAsync,
+    ProposalCsvFormatterSync, StakeDelegationInfo, StakeDelegationProposalFormatter,
+    TransferProposalFormatter, TxMetadata,
 };
 
 use rocket::Request;
@@ -39,15 +41,24 @@ pub struct ProposalOutput {
     pub txs_log: Vec<TxMetadata>,
 }
 
+#[derive(Serialize)]
+pub struct PaginatedProposals {
+    pub proposals: Vec<Proposal>,
+    pub total: usize,
+    pub page: usize,
+    pub page_size: usize,
+}
+
 #[get("/proposals/<dao_id>?<filters..>")]
 pub async fn get_dao_proposals(
     dao_id: &str,
     filters: ProposalFilters,
     store: &State<ProposalStore>,
-) -> Result<Json<Vec<Proposal>>, Status> {
+) -> Result<Json<PaginatedProposals>, Status> {
     let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
 
+    // Get cached data
     let cached = match get_latest_dao_cache(&client, &store, &dao_id).await {
         Ok(cache) => cache,
         Err(e) => {
@@ -55,9 +66,33 @@ pub async fn get_dao_proposals(
             return Err(Status::NotFound);
         }
     };
-    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
 
-    Ok(Json(filtered_proposals))
+    // Apply filters
+    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
+    let total = filtered_proposals.len();
+
+    // Handle pagination
+    let paginated: Vec<Proposal> = match (filters.page, filters.page_size) {
+        (Some(page), Some(page_size)) => {
+            // Frontend sends 0-based page numbers
+            let start = page * page_size;
+            let end = start + page_size;
+
+            if start < total {
+                filtered_proposals[start..filtered_proposals.len().min(end)].to_vec()
+            } else {
+                vec![]
+            }
+        }
+        _ => filtered_proposals.clone(),
+    };
+
+    Ok(Json(PaginatedProposals {
+        proposals: paginated,
+        total,
+        page: filters.page.unwrap_or(1),
+        page_size: filters.page_size.unwrap_or(total),
+    }))
 }
 
 #[get("/proposals/<dao_id>/<proposal_id>")]
@@ -106,53 +141,148 @@ pub async fn csv_proposals(
     if dao_id.is_empty() {
         return Err(Status::BadRequest);
     }
+
     let client = rpc_client::get_rpc_client();
-    let cached = get_latest_dao_cache(
-        &client,
-        &store,
-        &dao_id.parse().map_err(|_| Status::BadRequest)?,
-    )
-    .await
-    .map_err(|_| Status::NotFound)?;
+    let dao_id_account = dao_id.parse().map_err(|_| Status::BadRequest)?;
 
-    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
+    // Get cached data
+    let cached = get_latest_dao_cache(&client, &store, &dao_id_account)
+        .await
+        .map_err(|_| Status::NotFound)?;
 
-    let proposal_types = filters.proposal_type.as_deref().unwrap_or(&[]);
-    let keyword_lower = filters.keyword.as_ref().map(|k| k.to_lowercase());
-
-    let is_type = |t: &str| proposal_types.iter().any(|pt| pt == t);
-
-    let formatter = match keyword_lower.as_deref() {
-        Some(keyword) if is_type("FunctionCall") && keyword.contains("lockup") => {
-            ProposalFormatter::Sync(Box::new(LockupProposalFormatter))
+    // Check if DAO has a lockup account (for payments or stake delegation category)
+    let has_lockup_account = match filters.category.as_deref() {
+        Some(categories::PAYMENTS) | Some(categories::STAKE_DELEGATION) => {
+            rpc_client::account_to_lockup(&client, dao_id)
+                .await
+                .is_some()
         }
-        Some(keyword) if is_type("FunctionCall") && keyword.contains("asset") => {
-            ProposalFormatter::Async(Box::new(AssetExchangeProposalFormatter))
-        }
-        Some(keyword) if is_type("FunctionCall") && keyword.contains("stake") => {
-            ProposalFormatter::Sync(Box::new(StakeDelegationProposalFormatter))
-        }
-        _ if is_type("Transfer") => ProposalFormatter::Async(Box::new(TransferProposalFormatter)),
-        _ => ProposalFormatter::Sync(Box::new(DefaultFormatter)),
+        _ => false,
     };
 
     let mut wtr = csv::Writer::from_writer(vec![]);
-    wtr.write_record(&formatter.headers()).unwrap();
 
-    for proposal in filtered_proposals {
-        let record = formatter
-            .format(&client, &ft_metadata_cache, &proposal, &cached.policy)
-            .await;
+    // Helper functions to write CSV records with error handling
+    let write_headers = |wtr: &mut csv::Writer<Vec<u8>>, headers: &[&str]| -> Result<(), Status> {
+        wtr.write_record(headers)
+            .map_err(|_| Status::InternalServerError)
+    };
 
-        // Skip empty records (lockup requests)
-        if record.is_empty() {
-            continue;
+    let write_record = |wtr: &mut csv::Writer<Vec<u8>>, record: &[String]| -> Result<(), Status> {
+        wtr.write_record(record)
+            .map_err(|_| Status::InternalServerError)
+    };
+
+    match filters.category.as_deref() {
+        Some(categories::PAYMENTS) => {
+            let extracted = filters.filter_and_extract::<PaymentInfo>(cached.proposals);
+            let formatter = TransferProposalFormatter;
+            let mut headers = formatter.headers();
+            if !has_lockup_account {
+                if let Some(index) = headers.iter().position(|&h| h == "Treasury Wallet") {
+                    headers.remove(index);
+                }
+            }
+            write_headers(&mut wtr, &headers)?;
+            for (proposal, payment_info) in extracted {
+                let mut record = formatter
+                    .format(
+                        &client,
+                        &ft_metadata_cache,
+                        &proposal,
+                        &cached.policy,
+                        &payment_info,
+                    )
+                    .await;
+                if record.is_empty() {
+                    continue;
+                }
+                if !has_lockup_account && record.len() > 3 {
+                    record.remove(3);
+                }
+                write_record(&mut wtr, &record)?;
+            }
         }
-
-        wtr.write_record(&record).unwrap();
+        Some(categories::LOCKUP) => {
+            let extracted = filters.filter_and_extract::<LockupInfo>(cached.proposals);
+            let formatter = LockupProposalFormatter;
+            let headers = formatter.headers();
+            write_headers(&mut wtr, &headers)?;
+            for (proposal, lockup_info) in extracted {
+                let record = formatter.format(&proposal, &cached.policy, &lockup_info);
+                if record.is_empty() {
+                    continue;
+                }
+                write_record(&mut wtr, &record)?;
+            }
+        }
+        Some(categories::ASSET_EXCHANGE) => {
+            let extracted = filters.filter_and_extract::<AssetExchangeInfo>(cached.proposals);
+            let formatter = AssetExchangeProposalFormatter;
+            let headers = formatter.headers();
+            write_headers(&mut wtr, &headers)?;
+            for (proposal, asset_info) in extracted {
+                let record = formatter
+                    .format(
+                        &client,
+                        &ft_metadata_cache,
+                        &proposal,
+                        &cached.policy,
+                        &asset_info,
+                    )
+                    .await;
+                if record.is_empty() {
+                    continue;
+                }
+                write_record(&mut wtr, &record)?;
+            }
+        }
+        Some(categories::STAKE_DELEGATION) => {
+            let extracted = filters.filter_and_extract::<StakeDelegationInfo>(cached.proposals);
+            let formatter = StakeDelegationProposalFormatter;
+            let mut headers = formatter.headers();
+            if !has_lockup_account {
+                if let Some(index) = headers.iter().position(|&h| h == "Treasury Wallet") {
+                    headers.remove(index);
+                }
+            }
+            write_headers(&mut wtr, &headers)?;
+            for (proposal, stake_info) in extracted {
+                let mut record = formatter
+                    .format(
+                        &client,
+                        &ft_metadata_cache,
+                        &proposal,
+                        &cached.policy,
+                        &stake_info,
+                    )
+                    .await;
+                if record.is_empty() {
+                    continue;
+                }
+                if !has_lockup_account && record.len() > 3 {
+                    record.remove(3);
+                }
+                write_record(&mut wtr, &record)?;
+            }
+        }
+        _ => {
+            // Default: use the old logic for other categories
+            let formatter = DefaultFormatter;
+            let headers = formatter.headers();
+            write_headers(&mut wtr, &headers)?;
+            for proposal in filters.filter_proposals(cached.proposals, &cached.policy) {
+                let record = formatter.format(&proposal, &cached.policy, &());
+                if record.is_empty() {
+                    continue;
+                }
+                write_record(&mut wtr, &record)?;
+            }
+        }
     }
 
-    let data = String::from_utf8(wtr.into_inner().unwrap()).unwrap();
+    let data = String::from_utf8(wtr.into_inner().map_err(|_| Status::InternalServerError)?)
+        .map_err(|_| Status::InternalServerError)?;
 
     Ok(CsvFile {
         content: data,
@@ -177,6 +307,7 @@ pub fn rocket() -> rocket::Rocket<rocket::Build> {
         .allowed_origins(AllowedOrigins::some_exact(&[
             "http://localhost:8080",
             "http://localhost:5001",
+            "http://127.0.0.1:8080",
             "https://sputnik-indexer-divine-fog-3863.fly.dev",
             "https://sputnik-indexer.fly.dev",
         ]))
