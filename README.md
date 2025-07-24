@@ -13,125 +13,345 @@ GET /proposals/<dao_id>?<filters...>
 Retrieves a list of proposals for a specific DAO with optional filtering and sorting.
 
 #### Path Parameters
+
 - `dao_id` - The account ID of the DAO
 
 #### Query Parameters
-- `status` - Filter by proposal status
-- `keyword` - Filter proposals containing this keyword in description (case-insensitive)
-- `proposer` - Filter proposals by proposer account
-- `proposal_type` - Filter by proposal type(s), with support for advanced JSON path filtering
-- `min_votes` - Filter proposals with at least this many votes
-- `approvers` - Filter proposals approved by all listed accounts
-- `sort_by` - Sort proposals by either `creation_time` or `expiry_time`
-- `sort_direction` - Sort direction: `asc` (default) or `desc`
+
+**Status Filters:**
+
+- `statuses` - Filter by proposal status (comma-separated values)
+  - Values: `Approved`, `Rejected`, `InProgress`, `Expired`, `Removed`, `Moved`, `Failed`
+  - Example: `statuses=Approved,Rejected`
+
+**Search Filters:**
+
+- `search` - Filter proposals containing this keyword in description (case-insensitive)
+  - Example: `search=payment`
+
+**Proposer Filters:**
+
+- `proposers` - Filter proposals by proposer account(s) (comma-separated, OR logic)
+  - Example: `proposers=megha19.near,frol.near`
+- `proposers_not` - Exclude proposals by proposer account(s) (comma-separated, NOT logic)
+  - Example: `proposers_not=megha19.near,frol.near`
+
+**Approver Filters:**
+
+- `approvers` - Filter proposals approved by account(s) (comma-separated, OR logic)
+  - Example: `approvers=megha19.near,frol.near`
+- `approvers_not` - Exclude proposals approved by account(s) (comma-separated, NOT logic)
+  - Example: `approvers_not=megha19.near,frol.near`
+
+**Category Filters:**
+
+- `category` - Filter by proposal category
+  - Values: `payments`, `lockup`, `asset-exchange`, `stake-delegation`
+  - Example: `category=payments`
+
+**Payment-Specific Filters (only apply when category=payments):**
+
+- `recipients` - Filter by payment recipient(s) (comma-separated, OR logic)
+  - Example: `recipients=megha19.near,frol.near`
+- `recipients_not` - Exclude by payment recipient(s) (comma-separated, NOT logic)
+  - Example: `recipients_not=megha19.near,frol.near`
+- `tokens` - Filter by token(s) used in payments (comma-separated, OR logic)
+  - Values: `near`, `usdt.tether-token.near`, or any token contract ID
+  - Note: Empty token strings in proposals are treated as "near"
+  - Example: `tokens=near,usdt.tether-token.near`
+- `tokens_not` - Exclude by token(s) used in payments (comma-separated, NOT logic)
+  - Example: `tokens_not=near`
+- `amount_min` - Filter by minimum payment amount (in yoctoNEAR)
+  - Example: `amount_min=1000000000000000000000000`
+- `amount_max` - Filter by maximum payment amount (in yoctoNEAR)
+  - Example: `amount_max=10000000000000000000000000`
+
+**Date Filters:**
+
+- `created_between` - Filter proposals created between timestamps
+  - Format: `start_timestamp,end_timestamp` (nanoseconds since epoch)
+  - Example: `created_between=1640995200000000000,1672531200000000000`
+
+**Pagination:**
+
+- `page` - Page number (0-based, default: 0)
+  - Example: `page=0`
+- `page_size` - Number of proposals per page (default: 50)
+  - Example: `page_size=10`
+
+**Sorting:**
+
+- `sort_by` - Sort proposals by field
+  - Values: `CreationTime`, `ExpiryTime`
+  - Example: `sort_by=CreationTime`
+- `sort_direction` - Sort direction
+  - Values: `asc` (ascending), `desc` (descending)
+  - Example: `sort_direction=desc`
 
 #### Response Format
+
 - JSON (default)
-- CSV (set `Accept: text/csv` header)
+
+### Get Proposals CSV Export
+
+```
+GET /csv/proposals/<dao_id>?<filters...>
+```
+
+Retrieves proposals in CSV format with the same filtering options as the JSON endpoint.
+
+#### Response Format
+
+- CSV file download
 
 ### Get Specific Proposal
 
 ```
-GET /proposals/<dao_id>/<proposal_id>
+GET /proposal/<dao_id>/<proposal_id>
 ```
 
 Retrieves a specific proposal by ID from a DAO.
 
 #### Path Parameters
+
 - `dao_id` - The account ID of the DAO
 - `proposal_id` - The numeric ID of the proposal
 
-#### Response Format
-- JSON (default)
-- CSV (set `Accept: text/csv` header)
+### Get DAO Proposers
+
+```
+GET /proposals/<dao_id>/proposers
+```
+
+Retrieves a list of all unique proposers for a DAO.
+
+### Get DAO Approvers
+
+```
+GET /proposals/<dao_id>/approvers
+```
+
+Retrieves a list of all unique approvers (voters) for a DAO.
+
+### Get DAO Recipients
+
+```
+GET /proposals/<dao_id>/recipients
+```
+
+Retrieves a list of all unique payment recipients for a DAO.
+
+### Get DAO Requested Tokens
+
+```
+GET /proposals/<dao_id>/requested-tokens
+```
+
+Retrieves a list of all unique tokens requested in payment proposals for a DAO.
 
 ## Caching
 
 All responses are cached for 5 seconds to improve performance and reduce load on the RPC client. The API fetches the latest data from the cache and applies filters as needed.
 
+### Cache Behavior
+
+- **Cache Duration**: 5 seconds per DAO
+- **Cache Hit**: Returns cached data immediately
+- **Cache Miss**: Fetches fresh data from NEAR blockchain
+- **Cache Persistence**: Cache is persisted to disk and restored on server restart
+
 ## Filtering Logic
 
-The filtering system allows for combinations of filters:
-- All filter categories must be satisfied (AND logic between different filter types)
-- It is possible to have several `proposal_type` filters, a proposal must match all one of the specified types
-- It is possible to have several  `approvers`, a proposal must be approved by all specified accounts (AND logic)
+The filtering system supports complex combinations:
 
-## Proposal Type Filtering
+### Multi-Select Filters (OR Logic for Inclusion, NOT Logic for Exclusion)
 
-The API supports advanced filtering based on proposal types and their properties using a JSON path notation with comparison operators.
+- **Proposers**: `proposers` (OR), `proposers_not` (NOT)
+- **Approvers**: `approvers` (OR), `approvers_not` (NOT)
+- **Recipients**: `recipients` (OR), `recipients_not` (NOT)
+- **Tokens**: `tokens` (OR), `tokens_not` (NOT)
 
-### Format
+### Range Filters
 
-```
-<json_path>[:<operator><value>]
-```
+- **Amount**: `amount_min`, `amount_max` (inclusive ranges)
+- **Dates**: `created_between` (inclusive date range)
 
-Where:
-- `json_path` is a colon-separated path into the proposal's `kind` JSON structure
-- `operator` can be:
-  - `=` for equality comparison
-  - `>` for less than
-  - `<` for greater than
+### Special Token Handling
 
-### Examples
+- Empty token strings (`""`) in proposal data are treated as "NEAR" tokens
+- Filter input for NEAR should be `"near"` (lowercase)
 
-1. Filter by basic proposal type:
-```
-proposal_type=FunctionCall
-```
+### Combined Filter Logic
 
-2. Filter by proposal type with specific receiver:
-```
-proposal_type=Transfer:receiver_id=app.near
-```
-
-3. Filter transfers with amount less than 1 NEAR:
-```
-proposal_type=Transfer:amount>1000000000000000000000000
-```
-
-4. Filter by multiple criteria:
-```
-proposal_type=Transfer:receiver_id=app.near&proposal_type=Transfer:amount>1000000000000000000000000
-```
-
+- Different filter types use AND logic (all must match)
+- Multi-select filters within the same type use OR logic for inclusion, NOT logic for exclusion
+- Amount filters use inclusive ranges (>= min, <= max)
 
 ## Example Curl Requests
 
 ### Get All Proposals for a DAO
 
 ```bash
-curl -X GET "http://example.com/proposals/mydao.near"
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near"
 ```
 
-### Get Proposals Approved by Specific Accounts, Sorted by Creation Time Descending
+### Get Approved Payment Proposals
 
 ```bash
-curl -X GET "http://example.com/proposals/mydao.near?approvers=user1.near&approvers=user2.near&sort_by=CreationTime&sort_direction=desc"
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?statuses=Approved&category=payments"
 ```
 
-### Get a Specific Proposal in CSV Format
+### Get Proposals by Specific Proposer
 
 ```bash
-curl -X GET "http://example.com/proposals/mydao.near/42" -H "Accept: text/csv"
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?proposers=megha19.near,frol.near"
+```
+
+### Get Proposals Excluding Specific Approvers
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?approvers_not=megha19.near,frol.near"
+```
+
+### Get Payment Proposals with NEAR Token
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=payments&tokens=near"
+```
+
+### Get Payment Proposals with Amount Range
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=payments&amount_min=1000000000000000000000000&amount_max=10000000000000000000000000"
+```
+
+### Get Proposals with Multiple Filters
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?statuses=Approved&category=payments&proposers=megha19.near&page_size=10"
+```
+
+### Get Proposals with Pagination
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?page=0&page_size=5"
 ```
 
 ### Get All Proposals in CSV Format
 
 ```bash
-curl -X GET "http://example.com/proposals/mydao.near" -H "Accept: text/csv"
+curl -X GET "http://localhost:5001/csv/proposals/testing-astradao.sputnik-dao.near"
+```
+
+### Get DAO Proposers
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near/proposers"
+```
+
+### Get DAO Requested Tokens
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near/requested-tokens"
+```
+
+## Response Format Examples
+
+### Proposals Response (JSON)
+
+```json
+{
+  "proposals": [
+    {
+      "id": 1,
+      "proposer": "megha19.near",
+      "description": "Payment proposal for development work",
+      "status": "Approved",
+      "kind": {
+        "Transfer": {
+          "receiver_id": "frol.near",
+          "amount": "1000000000000000000000000",
+          "token_id": ""
+        }
+      },
+      "votes": {
+        "megha19.near": "Approve",
+        "frol.near": "Approve"
+      }
+    }
+  ],
+  "page": 0,
+  "page_size": 10,
+  "total": 1
+}
+```
+
+### Requested Tokens Response (JSON)
+
+```json
+{
+  "requested_tokens": ["near", "usdt.tether-token.near"],
+  "total": 2
+}
+```
+
+### Proposers Response (JSON)
+
+```json
+{
+  "proposers": ["megha19.near", "frol.near", "alice.near"],
+  "total": 3
+}
+```
+
+### Approvers Response (JSON)
+
+```json
+{
+  "approvers": ["megha19.near", "frol.near", "bob.near"],
+  "total": 3
+}
+```
+
+### Recipients Response (JSON)
+
+```json
+{
+  "recipients": ["megha19.near", "frol.near", "charlie.near"],
+  "total": 3
+}
 ```
 
 ## Testing
 
-
 1. Initialize the test environment by running:
+
    ```bash
    ./test_init.sh
    ```
+
    This script initializes test files and creates a sandbox NEAR state. This process may take some time to complete.
 
 2. Once initialization is complete, run the project tests with:
+
    ```bash
    ./test.sh
    ```
+
+3. Run specific filter tests:
+   ```bash
+   cargo test --test filter_test -- --nocapture
+   ```
+
+## Error Responses
+
+The API returns standard HTTP status codes:
+
+- **200 OK**: Successful request
+- **400 Bad Request**: Invalid parameters (e.g., malformed DAO ID)
+- **404 Not Found**: DAO or proposal not found
+- **500 Internal Server Error**: Server error
+
+## Development
+
+The project uses Rocket framework for the web server and includes comprehensive test coverage for all filtering functionality. The caching system ensures efficient performance while maintaining data freshness.
