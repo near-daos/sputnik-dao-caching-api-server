@@ -93,6 +93,7 @@ pub async fn get_proposals(
     dao_id: &str,
     filters: ProposalFilters,
     store: &State<ProposalStore>,
+    ft_metadata_cache: &State<FtMetadataCache>,
 ) -> Result<Json<PaginatedProposals>, Status> {
     let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
@@ -101,7 +102,13 @@ pub async fn get_proposals(
     let cached = get_cached_data(&dao_id, &client, &store).await?;
 
     // Apply filters
-    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
+    let filtered_proposals = filters
+        .filter_proposals_async(cached.proposals, &cached.policy, &ft_metadata_cache)
+        .await
+        .map_err(|e| {
+            eprintln!("Error filtering proposals: {}", e);
+            Status::InternalServerError
+        })?;
     let total = filtered_proposals.len();
 
     // Handle pagination
@@ -306,7 +313,13 @@ pub async fn csv_proposals(
         .await
         .map_err(|_| Status::NotFound)?;
 
-    let proposals = filters.filter_proposals(cached.proposals, &cached.policy);
+    let proposals = filters
+        .filter_proposals_async(cached.proposals, &cached.policy, &ft_metadata_cache)
+        .await
+        .map_err(|e| {
+            eprintln!("Error filtering proposals for CSV: {}", e);
+            Status::InternalServerError
+        })?;
 
     // Check if DAO has a lockup account (for payments or stake delegation category)
     let has_lockup_account = match filters.category.as_deref() {
@@ -462,12 +475,15 @@ pub fn rocket() -> rocket::Rocket<rocket::Build> {
 
     // Configure CORS
     let cors = CorsOptions::default()
-        .allowed_origins(AllowedOrigins::some_exact(&[
-            "http://localhost:8080",
-            "http://localhost:5001",
-            "http://127.0.0.1:8080",
-            "https://sputnik-indexer-divine-fog-3863.fly.dev",
-            "https://sputnik-indexer.fly.dev",
+        .allowed_origins(AllowedOrigins::some_regex(&[
+            r"https?://.*\.near\.page",
+            r"https?://near\.social",
+            r"https?://near\.org",
+            r"https?://localhost:8080",
+            r"https?://localhost:5001",
+            r"https?://127\.0\.0\.1:8080",
+            r"https?://sputnik-indexer-divine-fog-3863\.fly\.dev",
+            r"https?://sputnik-indexer\.fly\.dev",
         ]))
         .allow_credentials(true)
         .to_cors()

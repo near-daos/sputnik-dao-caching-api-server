@@ -29,6 +29,12 @@ Retrieves a list of proposals for a specific DAO with optional filtering and sor
 - `search` - Filter proposals containing this keyword in description (case-insensitive)
   - Example: `search=payment`
 
+**Proposal Type Filters:**
+
+- `proposal_types` - Filter by proposal types (comma-separated values)
+  - Values: `FunctionCall`, `Transfer`, `AddMemberToRole`, `RemoveMemberFromRole`, etc.
+  - Example: `proposal_types=FunctionCall,Transfer`
+
 **Proposer Filters:**
 
 - `proposers` - Filter proposals by proposer account(s) (comma-separated, OR logic)
@@ -42,6 +48,12 @@ Retrieves a list of proposals for a specific DAO with optional filtering and sor
   - Example: `approvers=megha19.near,frol.near`
 - `approvers_not` - Exclude proposals approved by account(s) (comma-separated, NOT logic)
   - Example: `approvers_not=megha19.near,frol.near`
+
+**Voter Vote Filters:**
+
+- `voter_votes` - Filter by specific voter votes (format: "account:vote,account:vote")
+  - Vote values: `approved` (Approve vote), `rejected` (Reject/Remove vote)
+  - Example: `voter_votes=alice.near:approved,bob.near:rejected`
 
 **Category Filters:**
 
@@ -61,16 +73,21 @@ Retrieves a list of proposals for a specific DAO with optional filtering and sor
   - Example: `tokens=near,usdt.tether-token.near`
 - `tokens_not` - Exclude by token(s) used in payments (comma-separated, NOT logic)
   - Example: `tokens_not=near`
-- `amount_min` - Filter by minimum payment amount (in yoctoNEAR)
-  - Example: `amount_min=1000000000000000000000000`
-- `amount_max` - Filter by maximum payment amount (in yoctoNEAR)
-  - Example: `amount_max=10000000000000000000000000`
+- `amount_min` - Filter by minimum payment amount (human-readable format)
+  - Example: `amount_min=1.5` (1.5 NEAR)
+- `amount_max` - Filter by maximum payment amount (human-readable format)
+  - Example: `amount_max=10.0` (10.0 NEAR)
+- `amount_equal` - Filter by exact payment amount (human-readable format)
+  - Example: `amount_equal=5.25` (5.25 NEAR)
 
 **Date Filters:**
 
-- `created_between` - Filter proposals created between timestamps
-  - Format: `start_timestamp,end_timestamp` (nanoseconds since epoch)
-  - Example: `created_between=1640995200000000000,1672531200000000000`
+- `created_date_from` - Filter proposals created from this date (inclusive)
+  - Format: `YYYY-MM-DD` (e.g., `2024-01-15`)
+  - Example: `created_date_from=2024-01-15`
+- `created_date_to` - Filter proposals created until this date (inclusive)
+  - Format: `YYYY-MM-DD` (e.g., `2024-12-31`)
+  - Example: `created_date_to=2024-12-31`
 
 **Pagination:**
 
@@ -170,11 +187,12 @@ The filtering system supports complex combinations:
 - **Approvers**: `approvers` (OR), `approvers_not` (NOT)
 - **Recipients**: `recipients` (OR), `recipients_not` (NOT)
 - **Tokens**: `tokens` (OR), `tokens_not` (NOT)
+- **Proposal Types**: `proposal_types` (OR logic)
 
 ### Range Filters
 
-- **Amount**: `amount_min`, `amount_max` (inclusive ranges)
-- **Dates**: `created_between` (inclusive date range)
+- **Amount**: `amount_min`, `amount_max`, `amount_equal` (inclusive ranges, exact match)
+- **Dates**: `created_date_from`, `created_date_to` (inclusive date range)
 
 ### Special Token Handling
 
@@ -185,7 +203,8 @@ The filtering system supports complex combinations:
 
 - Different filter types use AND logic (all must match)
 - Multi-select filters within the same type use OR logic for inclusion, NOT logic for exclusion
-- Amount filters use inclusive ranges (>= min, <= max)
+- Amount filters use inclusive ranges (>= min, <= max) or exact match (=)
+- Voter vote filters require ALL specified voters to match their expected vote
 
 ## Example Curl Requests
 
@@ -222,7 +241,31 @@ curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?c
 ### Get Payment Proposals with Amount Range
 
 ```bash
-curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=payments&amount_min=1000000000000000000000000&amount_max=10000000000000000000000000"
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=payments&amount_min=1.5&amount_max=10.0"
+```
+
+### Get Payment Proposals with Exact Amount
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=payments&amount_equal=5.25"
+```
+
+### Get Proposals by Date Range
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?created_date_from=2024-01-15&created_date_to=2024-12-31"
+```
+
+### Get Proposals by Proposal Type
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?proposal_types=FunctionCall,Transfer"
+```
+
+### Get Proposals by Specific Voter Votes
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?voter_votes=alice.near:approved,bob.near:rejected"
 ```
 
 ### Get Proposals with Multiple Filters

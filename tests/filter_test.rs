@@ -117,335 +117,383 @@ fn normalize_token(token: &str) -> &str {
     if token.is_empty() { "near" } else { token }
 }
 
+// Helper function to validate payment amount with u128 parsing
+fn verify_payment_amount(
+    proposal: &serde_json::Value,
+    min_amount: Option<u128>,
+    max_amount: Option<u128>,
+    exact_amount: Option<u128>,
+) {
+    if let Some(payment_info) = extract_payment_info(proposal) {
+        if let Ok(amount_u128) = payment_info.amount.parse::<u128>() {
+            if let Some(min) = min_amount {
+                assert!(
+                    amount_u128 >= min,
+                    "Payment proposal amount should be >= min range"
+                );
+            }
+            if let Some(max) = max_amount {
+                assert!(
+                    amount_u128 <= max,
+                    "Payment proposal amount should be <= max range"
+                );
+            }
+            if let Some(exact) = exact_amount {
+                assert!(
+                    amount_u128 == exact,
+                    "Payment proposal should have exact amount"
+                );
+            }
+        }
+    }
+}
+
+// Helper function to validate response fields
+fn verify_response_fields(response: &serde_json::Value, expected_fields: &[&str]) {
+    for field in expected_fields {
+        assert!(
+            response.get(field).is_some(),
+            "Response should have {} field",
+            field
+        );
+    }
+}
+
+// Helper function to verify proposals are returned (for invalid/empty filters)
+fn verify_proposals_returned(proposals: &[serde_json::Value], message: &str) {
+    assert!(proposals.len() > 0, "{}", message);
+}
+
+// Helper function to verify sorting order
+fn verify_sorting_order(proposals: &[serde_json::Value], ascending: bool, field: &str) {
+    if proposals.len() > 1 {
+        for i in 0..proposals.len() - 1 {
+            let current_time = proposals[i]
+                .get(field)
+                .and_then(|t| t.as_str())
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+            let next_time = proposals[i + 1]
+                .get(field)
+                .and_then(|t| t.as_str())
+                .unwrap()
+                .parse::<u64>()
+                .unwrap();
+
+            if ascending {
+                assert!(
+                    current_time <= next_time,
+                    "Proposals should be sorted by {} ascending",
+                    field
+                );
+            } else {
+                assert!(
+                    current_time >= next_time,
+                    "Proposals should be sorted by {} descending",
+                    field
+                );
+            }
+        }
+    }
+}
+
+// Helper function to verify all proposals have expected status
+fn verify_proposal_status(proposals: &[serde_json::Value], expected_status: &str) {
+    for proposal in proposals {
+        let status = proposal.get("status").and_then(|s| s.as_str()).unwrap();
+        assert_eq!(
+            status, expected_status,
+            "All proposals should have {} status",
+            expected_status
+        );
+    }
+}
+
+// Helper function to verify all proposals contain expected keywords in description
+fn verify_proposal_description_keywords(proposals: &[serde_json::Value], keywords: &[&str]) {
+    for proposal in proposals {
+        let description = proposal
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap();
+        let description_lower = description.to_lowercase();
+        let has_keyword = keywords
+            .iter()
+            .any(|keyword| description_lower.contains(keyword));
+        assert!(
+            has_keyword,
+            "All proposals should contain at least one of the keywords: {:?}",
+            keywords
+        );
+    }
+}
+
+// Helper function to verify all proposals have expected proposers (positive or negative)
+fn verify_proposal_proposers(
+    proposals: &[serde_json::Value],
+    expected_proposers: &[&str],
+    exclude: bool,
+) {
+    let expected_set: std::collections::HashSet<&str> =
+        expected_proposers.iter().cloned().collect();
+    for proposal in proposals {
+        let proposer = proposal.get("proposer").and_then(|p| p.as_str()).unwrap();
+        if exclude {
+            assert!(
+                !expected_set.contains(proposer),
+                "All proposals should NOT have the excluded proposers: {:?}",
+                expected_proposers
+            );
+        } else {
+            assert!(
+                expected_set.contains(proposer),
+                "All proposals should have one of the specified proposers: {:?}",
+                expected_proposers
+            );
+        }
+    }
+}
+
+// Helper function to verify all proposals have votes from expected approvers (positive or negative)
+fn verify_proposal_approvers(
+    proposals: &[serde_json::Value],
+    expected_approvers: &[&str],
+    exclude: bool,
+) {
+    let expected_set: std::collections::HashSet<&str> =
+        expected_approvers.iter().cloned().collect();
+    for proposal in proposals {
+        let votes = proposal.get("votes").and_then(|v| v.as_object()).unwrap();
+        let has_any_approver = votes.keys().any(|key| expected_set.contains(key.as_str()));
+        if exclude {
+            assert!(
+                !has_any_approver,
+                "All proposals should NOT have votes from the excluded approvers: {:?}",
+                expected_approvers
+            );
+        } else {
+            assert!(
+                has_any_approver,
+                "All proposals should have votes from at least one of the specified approvers: {:?}",
+                expected_approvers
+            );
+        }
+    }
+}
+
+// Helper function to verify all proposals are payment proposals with specific recipients (positive or negative)
+fn verify_payment_recipients(
+    proposals: &[serde_json::Value],
+    expected_recipients: &[&str],
+    exclude: bool,
+) {
+    let expected_set: std::collections::HashSet<&str> =
+        expected_recipients.iter().cloned().collect();
+    for proposal in proposals {
+        if let Some(payment_info) = extract_payment_info(proposal) {
+            if exclude {
+                assert!(
+                    !expected_set.contains(payment_info.receiver.as_str()),
+                    "All payment proposals should NOT have the excluded recipients: {:?}",
+                    expected_recipients
+                );
+            } else {
+                assert!(
+                    expected_set.contains(payment_info.receiver.as_str()),
+                    "All payment proposals should have one of the specified recipients: {:?}",
+                    expected_recipients
+                );
+            }
+        } else {
+            panic!("All proposals should be payment proposals");
+        }
+    }
+}
+
+// Helper function to verify all proposals are payment proposals with specific tokens (positive or negative)
+fn verify_payment_tokens(proposals: &[serde_json::Value], expected_tokens: &[&str], exclude: bool) {
+    let expected_set: std::collections::HashSet<&str> = expected_tokens.iter().cloned().collect();
+    for proposal in proposals {
+        if let Some(payment_info) = extract_payment_info(proposal) {
+            let token = normalize_token(&payment_info.token);
+            if exclude {
+                assert!(
+                    !expected_set.contains(token),
+                    "All payment proposals should NOT have the excluded tokens: {:?}",
+                    expected_tokens
+                );
+            } else {
+                assert!(
+                    expected_set.contains(token),
+                    "All payment proposals should have one of the specified tokens: {:?}",
+                    expected_tokens
+                );
+            }
+        } else {
+            panic!("All proposals should be payment proposals");
+        }
+    }
+}
+
+// Helper function to run a filter test
+async fn run_filter_test<F>(client: &Client, test_name: &str, url: &str, verification_fn: F)
+where
+    F: FnOnce(&[serde_json::Value]),
+{
+    println!("Testing {}...", test_name);
+    let response = make_request_and_parse(client, url).await;
+
+    if let Some(proposals_array) = get_proposals_array(&response) {
+        verification_fn(proposals_array);
+    }
+}
+
 #[tokio::test]
 async fn test_all_filters() {
     let client = get_test_client().await;
 
     // Test 1: Status filter
-    println!("Testing status filter...");
-    let response = make_request_and_parse(
+    run_filter_test(
         &client,
+        "status filter",
         &format!("/proposals/{}?statuses=Approved", TEST_DAO_ID),
+        |proposals| verify_proposal_status(proposals, "Approved"),
     )
     .await;
 
-    // Verify all returned proposals have Approved status
-    if let Some(proposals_array) = get_proposals_array(&response) {
-        for proposal in proposals_array {
-            let status = proposal.get("status").and_then(|s| s.as_str()).unwrap();
-            assert_eq!(
-                status, "Approved",
-                "All proposals should have Approved status"
-            );
-        }
-    }
-
     // Test 2: Search filter
-    println!("Testing search filter...");
-    let response = client
-        .get(format!("/proposals/{}?search=payment", TEST_DAO_ID))
-        .dispatch()
-        .await;
-
-    assert_eq!(response.status(), Status::Ok);
-
-    let response_body = response.into_string().await.unwrap();
-    let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-    // Verify all returned proposals contain "payment" in description
-    if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-        for proposal in proposals_array {
-            let description = proposal
-                .get("description")
-                .and_then(|d| d.as_str())
-                .unwrap();
-            assert!(
-                description.to_lowercase().contains("payment"),
-                "All proposals should contain 'payment' in description"
-            );
-        }
-    }
+    run_filter_test(
+        &client,
+        "search filter",
+        &format!("/proposals/{}?search=payment", TEST_DAO_ID),
+        |proposals| verify_proposal_description_keywords(proposals, &["payment"]),
+    )
+    .await;
 
     // Test 3: Proposers filter
-    println!("Testing proposers filter...");
-    let response = client
-        .get(format!(
+    run_filter_test(
+        &client,
+        "proposers filter",
+        &format!(
             "/proposals/{}?proposers=megha19.near,frol.near",
             TEST_DAO_ID
-        ))
-        .dispatch()
-        .await;
-
-    assert_eq!(response.status(), Status::Ok);
-
-    let response_body = response.into_string().await.unwrap();
-    let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-    // Verify all returned proposals have one of the specified proposers
-    let expected_proposers: std::collections::HashSet<&str> =
-        ["megha19.near", "frol.near"].iter().cloned().collect();
-
-    if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-        for proposal in proposals_array {
-            let proposer = proposal.get("proposer").and_then(|p| p.as_str()).unwrap();
-            assert!(
-                expected_proposers.contains(proposer),
-                "All proposals should have one of the specified proposers"
-            );
-        }
-    }
+        ),
+        |proposals| verify_proposal_proposers(proposals, &["megha19.near", "frol.near"], false),
+    )
+    .await;
 
     // Test 4: Proposers NOT filter
-    println!("Testing proposers NOT filter...");
-    let response = client
-        .get(format!(
+    run_filter_test(
+        &client,
+        "proposers NOT filter",
+        &format!(
             "/proposals/{}?proposers_not=megha19.near,frol.near",
             TEST_DAO_ID
-        ))
-        .dispatch()
-        .await;
-
-    assert_eq!(response.status(), Status::Ok);
-
-    let response_body = response.into_string().await.unwrap();
-    let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-    // Verify all returned proposals do NOT have the excluded proposers
-    let excluded_proposers: std::collections::HashSet<&str> =
-        ["megha19.near", "frol.near"].iter().cloned().collect();
-
-    if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-        for proposal in proposals_array {
-            let proposer = proposal.get("proposer").and_then(|p| p.as_str()).unwrap();
-            assert!(
-                !excluded_proposers.contains(proposer),
-                "All proposals should NOT have the excluded proposers"
-            );
-        }
-    }
+        ),
+        |proposals| verify_proposal_proposers(proposals, &["megha19.near", "frol.near"], true),
+    )
+    .await;
 
     // Test 5: Approvers filter
-    println!("Testing approvers filter...");
-    let response = client
-        .get(format!(
+    run_filter_test(
+        &client,
+        "approvers filter",
+        &format!(
             "/proposals/{}?approvers=megha19.near,frol.near",
             TEST_DAO_ID
-        ))
-        .dispatch()
-        .await;
-
-    assert_eq!(response.status(), Status::Ok);
-
-    let response_body = response.into_string().await.unwrap();
-    let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-    // Verify all returned proposals have votes from at least one of the specified approvers
-    let expected_approvers: std::collections::HashSet<&str> =
-        ["megha19.near", "frol.near"].iter().cloned().collect();
-
-    if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-        for proposal in proposals_array {
-            let votes = proposal.get("votes").and_then(|v| v.as_object()).unwrap();
-            let has_any_approver = votes
-                .keys()
-                .any(|key| expected_approvers.contains(key.as_str()));
-            assert!(
-                has_any_approver,
-                "All proposals should have votes from at least one of the specified approvers"
-            );
-        }
-    }
+        ),
+        |proposals| verify_proposal_approvers(proposals, &["megha19.near", "frol.near"], false),
+    )
+    .await;
 
     // Test 6: Approvers NOT filter
-    println!("Testing approvers NOT filter...");
-    let response = client
-        .get(format!(
+    run_filter_test(
+        &client,
+        "approvers NOT filter",
+        &format!(
             "/proposals/{}?approvers_not=megha19.near,frol.near",
             TEST_DAO_ID
-        ))
-        .dispatch()
-        .await;
-
-    assert_eq!(response.status(), Status::Ok);
-
-    let response_body = response.into_string().await.unwrap();
-    let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-    // Verify all returned proposals do NOT have votes from the excluded approvers
-    let excluded_approvers: std::collections::HashSet<&str> =
-        ["megha19.near", "frol.near"].iter().cloned().collect();
-
-    if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-        for proposal in proposals_array {
-            let votes = proposal.get("votes").and_then(|v| v.as_object()).unwrap();
-            let has_excluded_approver = votes
-                .keys()
-                .any(|key| excluded_approvers.contains(key.as_str()));
-            assert!(
-                !has_excluded_approver,
-                "All proposals should NOT have votes from the excluded approvers"
-            );
-        }
-    }
+        ),
+        |proposals| verify_proposal_approvers(proposals, &["megha19.near", "frol.near"], true),
+    )
+    .await;
 
     // Test 7: Recipients filter
-    println!("Testing recipients filter...");
-    let response = client
-        .get(format!(
+    run_filter_test(
+        &client,
+        "recipients filter",
+        &format!(
             "/proposals/{}?category=payments&recipients=megha19.near",
             TEST_DAO_ID
-        ))
-        .dispatch()
-        .await;
-
-    assert_eq!(response.status(), Status::Ok);
-
-    let response_body = response.into_string().await.unwrap();
-    let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-    // Verify all returned proposals have the specified recipient
-    if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-        for proposal in proposals_array {
-            if let Some(payment_info) = extract_payment_info(proposal) {
-                assert_eq!(
-                    payment_info.receiver, "megha19.near",
-                    "Payment proposal should have correct recipient"
-                );
-            }
-        }
-    }
+        ),
+        |proposals| verify_payment_recipients(proposals, &["megha19.near"], false),
+    )
+    .await;
 
     // Test 8: Recipients NOT filter
-    println!("Testing recipients NOT filter...");
-    let response = client
-        .get(format!(
+    run_filter_test(
+        &client,
+        "recipients NOT filter",
+        &format!(
             "/proposals/{}?category=payments&recipients_not=megha19.near,frol.near",
             TEST_DAO_ID
-        ))
-        .dispatch()
-        .await;
-
-    assert_eq!(response.status(), Status::Ok);
-
-    let response_body = response.into_string().await.unwrap();
-    let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-    // Verify all returned proposals do NOT have the excluded recipients
-    if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-        for proposal in proposals_array {
-            if let Some(payment_info) = extract_payment_info(proposal) {
-                assert_ne!(
-                    payment_info.receiver, "megha19.near",
-                    "Payment proposal should NOT have excluded recipient"
-                );
-                assert_ne!(
-                    payment_info.receiver, "frol.near",
-                    "Payment proposal should NOT have excluded recipient"
-                );
-            }
-        }
-    }
+        ),
+        |proposals| verify_payment_recipients(proposals, &["megha19.near", "frol.near"], true),
+    )
+    .await;
 
     // Test 9: Tokens filter
-    println!("Testing tokens filter...");
-    let response = client
-        .get(format!(
-            "/proposals/{}?category=payments&tokens=near",
-            TEST_DAO_ID
-        ))
-        .dispatch()
-        .await;
-
-    assert_eq!(response.status(), Status::Ok);
-
-    let response_body = response.into_string().await.unwrap();
-    let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-    // Verify all returned proposals use the specified token
-    if let Some(proposals_array) = get_proposals_array(&proposals) {
-        for proposal in proposals_array {
-            if let Some(payment_info) = extract_payment_info(proposal) {
-                let token_to_check = normalize_token(&payment_info.token);
-                assert_eq!(
-                    token_to_check, "near",
-                    "Payment proposal should have correct token"
-                );
-            }
-        }
-    }
+    run_filter_test(
+        &client,
+        "tokens filter",
+        &format!("/proposals/{}?category=payments&tokens=near", TEST_DAO_ID),
+        |proposals| verify_payment_tokens(proposals, &["near"], false),
+    )
+    .await;
 
     // Test 10: Tokens NOT filter
-    println!("Testing tokens NOT filter...");
-    let response = make_request_and_parse(
+    run_filter_test(
         &client,
+        "tokens NOT filter",
         &format!(
             "/proposals/{}?category=payments&tokens_not=near",
             TEST_DAO_ID
         ),
+        |proposals| verify_payment_tokens(proposals, &["near"], true),
     )
     .await;
 
-    // Verify all returned proposals do NOT use the excluded token
-    if let Some(proposals_array) = get_proposals_array(&response) {
-        for proposal in proposals_array {
-            if let Some(payment_info) = extract_payment_info(proposal) {
-                let token_to_check = normalize_token(&payment_info.token);
-                assert_ne!(
-                    token_to_check, "near",
-                    "Payment proposal should NOT have excluded token"
-                );
-            }
-        }
-    }
-
-    // Test 11: Amount filters
-    println!("Testing amount filters...");
-    let response = make_request_and_parse(
+    // Test 11: Amount filters with specific token
+    run_filter_test(
         &client,
+        "amount min filter with NEAR token",
         &format!(
-            "/proposals/{}?category=payments&amount_min=1000000000000000000000000",
+            "/proposals/{}?category=payments&tokens=near&amount_min=1.0",
             TEST_DAO_ID
         ),
+        |proposals| {
+            for proposal in proposals {
+                verify_payment_amount(proposal, Some(1000000000000000000000000), None, None);
+            }
+        },
     )
     .await;
 
-    // Verify all returned proposals have amounts >= min
-    if let Some(proposals_array) = get_proposals_array(&response) {
-        for proposal in proposals_array {
-            if let Some(payment_info) = extract_payment_info(proposal) {
-                if let Ok(amount_u128) = payment_info.amount.parse::<u128>() {
-                    assert!(
-                        amount_u128 >= 1000000000000000000000000,
-                        "Payment proposal amount should be >= min range"
-                    );
-                }
-            }
-        }
-    }
-
-    // Test amount_max filter
-    let response = make_request_and_parse(
+    run_filter_test(
         &client,
+        "amount max filter with NEAR token",
         &format!(
-            "/proposals/{}?category=payments&amount_max=10000000000000000000000000",
+            "/proposals/{}?category=payments&tokens=near&amount_max=100.0",
             TEST_DAO_ID
         ),
+        |proposals| {
+            for proposal in proposals {
+                verify_payment_amount(proposal, None, Some(100000000000000000000000000), None);
+            }
+        },
     )
     .await;
-
-    // Verify all returned proposals have amounts <= max
-    if let Some(proposals_array) = get_proposals_array(&response) {
-        for proposal in proposals_array {
-            if let Some(payment_info) = extract_payment_info(proposal) {
-                if let Ok(amount_u128) = payment_info.amount.parse::<u128>() {
-                    assert!(
-                        amount_u128 <= 10000000000000000000000000,
-                        "Payment proposal amount should be <= max range"
-                    );
-                }
-            }
-        }
-    }
 
     // Test 12: Pagination
     println!("Testing pagination...");
@@ -456,22 +504,7 @@ async fn test_all_filters() {
     .await;
 
     // Verify pagination fields are present
-    assert!(
-        response.get("page").is_some(),
-        "Response should have page field"
-    );
-    assert!(
-        response.get("page_size").is_some(),
-        "Response should have page_size field"
-    );
-    assert!(
-        response.get("total").is_some(),
-        "Response should have total field"
-    );
-    assert!(
-        response.get("proposals").is_some(),
-        "Response should have proposals field"
-    );
+    verify_response_fields(&response, &["page", "page_size", "total", "proposals"]);
 
     // Verify page_size is respected
     if let Some(proposals_array) = get_proposals_array(&response) {
@@ -482,40 +515,33 @@ async fn test_all_filters() {
     }
 
     // Test 13: Multiple filters
-    println!("Testing multiple filters...");
-    let response = make_request_and_parse(
+    run_filter_test(
         &client,
+        "multiple filters",
         &format!(
             "/proposals/{}?statuses=Approved&category=payments&proposers=megha19.near&page_size=10",
             TEST_DAO_ID
         ),
-    )
-    .await;
-
-    // Verify all returned proposals meet all filter criteria
-    if let Some(proposals_array) = get_proposals_array(&response) {
-        for proposal in proposals_array {
-            // Check status
-            let status = proposal.get("status").and_then(|s| s.as_str()).unwrap();
-            assert_eq!(
-                status, "Approved",
-                "All proposals should have Approved status"
-            );
+        |proposals| {
+            verify_proposal_status(proposals, "Approved");
 
             // Check proposer
-            let proposer = proposal.get("proposer").and_then(|p| p.as_str()).unwrap();
-            assert_eq!(
-                proposer, "megha19.near",
-                "All proposals should have the specified proposer"
-            );
+            for proposal in proposals {
+                let proposer = proposal.get("proposer").and_then(|p| p.as_str()).unwrap();
+                assert_eq!(
+                    proposer, "megha19.near",
+                    "All proposals should have the specified proposer"
+                );
 
-            // Check category (payment proposals)
-            assert!(
-                extract_payment_info(proposal).is_some(),
-                "All proposals should be payment proposals"
-            );
-        }
-    }
+                // Check category (payment proposals)
+                assert!(
+                    extract_payment_info(proposal).is_some(),
+                    "All proposals should be payment proposals"
+                );
+            }
+        },
+    )
+    .await;
 
     // Test 14: Requested tokens endpoint
     println!("Testing requested tokens endpoint...");
@@ -526,14 +552,7 @@ async fn test_all_filters() {
     .await;
 
     // Verify response structure
-    assert!(
-        response.get("requested_tokens").is_some(),
-        "Response should have requested_tokens field"
-    );
-    assert!(
-        response.get("total").is_some(),
-        "Response should have total field"
-    );
+    verify_response_fields(&response, &["requested_tokens", "total"]);
 
     // Verify tokens array
     if let Some(tokens_array) = response.get("requested_tokens").and_then(|t| t.as_array()) {
@@ -554,437 +573,381 @@ async fn test_all_filters() {
         );
     }
 
+    // Test 15: Proposal types filter
+    run_filter_test(
+        &client,
+        "proposal types filter",
+        &format!(
+            "/proposals/{}?proposal_types=FunctionCall,Transfer",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            for proposal in proposals {
+                let kind = proposal.get("kind").and_then(|k| k.as_object()).unwrap();
+                let has_expected_type = kind.keys().any(|key| {
+                    let key_str = key.as_str();
+                    key_str == "FunctionCall" || key_str == "Transfer"
+                });
+                assert!(
+                    has_expected_type,
+                    "All proposals should have one of the specified proposal types"
+                );
+            }
+        },
+    )
+    .await;
+
+    // Test 16: Voter votes filter
+    run_filter_test(
+        &client,
+        "voter votes filter",
+        &format!(
+            "/proposals/{}?voter_votes=megha19.near:approved",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            for proposal in proposals {
+                let votes = proposal.get("votes").and_then(|v| v.as_object()).unwrap();
+                let megha_vote = votes.get("megha19.near").and_then(|v| v.as_str());
+                assert!(
+                    megha_vote == Some("Approve"),
+                    "All proposals should have megha19.near voting Approve"
+                );
+            }
+        },
+    )
+    .await;
+
+    // Test 17: Amount equal filter
+    run_filter_test(
+        &client,
+        "amount equal filter",
+        &format!(
+            "/proposals/{}?category=payments&tokens=near&amount_equal=1.5",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            for proposal in proposals {
+                verify_payment_amount(proposal, None, None, Some(1500000000000000000000000));
+            }
+        },
+    )
+    .await;
+
+    // Test 18: Date range filters
+    run_filter_test(
+        &client,
+        "date range filters",
+        &format!(
+            "/proposals/{}?created_date_from=2024-01-01&created_date_to=2024-12-31",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            for proposal in proposals {
+                let submission_time = proposal
+                    .get("submission_time")
+                    .and_then(|t| t.as_str())
+                    .unwrap()
+                    .parse::<u64>()
+                    .unwrap();
+
+                // Convert dates to timestamps (nanoseconds)
+                let from_timestamp = 1704067200000000000; // 2024-01-01 00:00:00 UTC
+                let to_timestamp = 1735689599999999999; // 2024-12-31 23:59:59 UTC
+
+                assert!(
+                    submission_time >= from_timestamp && submission_time <= to_timestamp,
+                    "All proposals should be within the specified date range"
+                );
+            }
+        },
+    )
+    .await;
+
+    // Test 19: Multiple voter votes filter
+    run_filter_test(
+        &client,
+        "multiple voter votes filter",
+        &format!(
+            "/proposals/{}?voter_votes=megha19.near:approved,frol.near:rejected",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            for proposal in proposals {
+                let votes = proposal.get("votes").and_then(|v| v.as_object()).unwrap();
+
+                // Check megha19.near voted Approve
+                let megha_vote = votes.get("megha19.near").and_then(|v| v.as_str());
+                assert!(
+                    megha_vote == Some("Approve"),
+                    "All proposals should have megha19.near voting Approve"
+                );
+
+                // Check frol.near voted Reject or Remove
+                let frol_vote = votes.get("frol.near").and_then(|v| v.as_str());
+                assert!(
+                    frol_vote == Some("Reject") || frol_vote == Some("Remove"),
+                    "All proposals should have frol.near voting Reject or Remove"
+                );
+            }
+        },
+    )
+    .await;
+
+    // Test 20: Human-readable amount filters
+    run_filter_test(
+        &client,
+        "human-readable amount filters",
+        &format!(
+            "/proposals/{}?category=payments&tokens=near&amount_min=1.0&amount_max=10.0",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            for proposal in proposals {
+                verify_payment_amount(
+                    proposal,
+                    Some(1000000000000000000000000),
+                    Some(10000000000000000000000000),
+                    None,
+                );
+            }
+        },
+    )
+    .await;
+
+    // Test 21: Proposers NOT filter
+    run_filter_test(
+        &client,
+        "proposers NOT filter",
+        &format!(
+            "/proposals/{}?proposers_not=megha19.near,frol.near",
+            TEST_DAO_ID
+        ),
+        |proposals| verify_proposal_proposers(proposals, &["megha19.near", "frol.near"], true),
+    )
+    .await;
+
+    // Test 22: Approvers NOT filter
+    run_filter_test(
+        &client,
+        "approvers NOT filter",
+        &format!(
+            "/proposals/{}?approvers_not=megha19.near,frol.near",
+            TEST_DAO_ID
+        ),
+        |proposals| verify_proposal_approvers(proposals, &["megha19.near", "frol.near"], true),
+    )
+    .await;
+
+    // Test 23: Recipients NOT filter
+    run_filter_test(
+        &client,
+        "recipients NOT filter",
+        &format!(
+            "/proposals/{}?category=payments&recipients_not=megha19.near,frol.near",
+            TEST_DAO_ID
+        ),
+        |proposals| verify_payment_recipients(proposals, &["megha19.near", "frol.near"], true),
+    )
+    .await;
+
+    // Test 24: Tokens NOT filter
+    run_filter_test(
+        &client,
+        "tokens NOT filter",
+        &format!(
+            "/proposals/{}?category=payments&tokens_not=near",
+            TEST_DAO_ID
+        ),
+        |proposals| verify_payment_tokens(proposals, &["near"], true),
+    )
+    .await;
+
+    // Test 25: Voter votes filter with non-existent voter
+    run_filter_test(
+        &client,
+        "voter votes filter with non-existent voter",
+        &format!(
+            "/proposals/{}?voter_votes=nonexistent.near:approved",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            assert_eq!(
+                proposals.len(),
+                0,
+                "No proposals should be returned when voter doesn't exist"
+            );
+        },
+    )
+    .await;
+
+    // Test 26: Amount filters with invalid amounts
+    run_filter_test(
+        &client,
+        "amount filters with invalid amounts",
+        &format!(
+            "/proposals/{}?category=payments&tokens=near&amount_min=invalid",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            assert_eq!(
+                proposals.len(),
+                0,
+                "No proposals should be returned when amount is invalid"
+            );
+        },
+    )
+    .await;
+
+    // Test 27: Date filters with invalid dates
+    run_filter_test(
+        &client,
+        "date filters with invalid dates",
+        &format!("/proposals/{}?created_date_from=invalid-date", TEST_DAO_ID),
+        |proposals| {
+            verify_proposals_returned(
+                proposals,
+                "All proposals should be returned when date filter is invalid",
+            );
+        },
+    )
+    .await;
+
+    // Test 28: Proposal types filter with non-existent types
+    run_filter_test(
+        &client,
+        "proposal types filter with non-existent types",
+        &format!("/proposals/{}?proposal_types=NonExistentType", TEST_DAO_ID),
+        |proposals| {
+            assert_eq!(
+                proposals.len(),
+                0,
+                "No proposals should be returned when proposal type doesn't exist"
+            );
+        },
+    )
+    .await;
+
+    // Test 30: Sorting filters
+    run_filter_test(
+        &client,
+        "CreationTime ascending",
+        &format!(
+            "/proposals/{}?sort_by=CreationTime&sort_direction=asc",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            verify_sorting_order(proposals, true, "submission_time");
+        },
+    )
+    .await;
+
+    run_filter_test(
+        &client,
+        "CreationTime descending",
+        &format!(
+            "/proposals/{}?sort_by=CreationTime&sort_direction=desc",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            verify_sorting_order(proposals, false, "submission_time");
+        },
+    )
+    .await;
+
+    run_filter_test(
+        &client,
+        "ExpiryTime ascending",
+        &format!(
+            "/proposals/{}?sort_by=ExpiryTime&sort_direction=asc",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            verify_sorting_order(proposals, true, "submission_time");
+        },
+    )
+    .await;
+
+    // Test 31: Multiple statuses filter
+    run_filter_test(
+        &client,
+        "multiple statuses filter",
+        &format!("/proposals/{}?statuses=Approved,Rejected", TEST_DAO_ID),
+        |proposals| {
+            for proposal in proposals {
+                let status = proposal.get("status").and_then(|s| s.as_str()).unwrap();
+                let expected_statuses = ["Approved", "Rejected"];
+                assert!(
+                    expected_statuses.contains(&status),
+                    "All proposals should have one of the specified statuses"
+                );
+            }
+        },
+    )
+    .await;
+
+    // Test 32: Multiple search keywords
+    run_filter_test(
+        &client,
+        "multiple search keywords",
+        &format!("/proposals/{}?search=payment,budget", TEST_DAO_ID),
+        |proposals| {
+            verify_proposal_description_keywords(proposals, &["payment", "budget"]);
+        },
+    )
+    .await;
+
+    // Test 33: Empty filter values
+    run_filter_test(
+        &client,
+        "empty statuses filter",
+        &format!("/proposals/{}?statuses=", TEST_DAO_ID),
+        |proposals| {
+            assert!(
+                proposals.is_empty(),
+                "Empty statuses should return no proposals"
+            );
+        },
+    )
+    .await;
+
+    run_filter_test(
+        &client,
+        "empty search filter",
+        &format!("/proposals/{}?search=", TEST_DAO_ID),
+        |proposals| {
+            assert!(
+                proposals.is_empty(),
+                "Empty search should return no proposals"
+            );
+        },
+    )
+    .await;
+
+    // Test 35: Invalid category
+    run_filter_test(
+        &client,
+        "invalid category",
+        &format!("/proposals/{}?category=invalid-category", TEST_DAO_ID),
+        |proposals| {
+            verify_proposals_returned(proposals, "Invalid category should return all proposals");
+        },
+    )
+    .await;
+
+    // Test 36: Invalid sort_by
+    run_filter_test(
+        &client,
+        "invalid sort_by",
+        &format!("/proposals/{}?sort_by=InvalidSort", TEST_DAO_ID),
+        |proposals| {
+            verify_proposals_returned(
+                proposals,
+                "Invalid sort_by should return proposals without sorting",
+            );
+        },
+    )
+    .await;
+
     println!("All filter tests completed successfully!");
 }
-
-// #[tokio::test]
-// async fn test_proposers_filter() {
-//     let client = get_test_client().await;
-
-//     // Test proposers filter
-//     let response = client
-//         .get(format!(
-//             "/proposals/{}?proposers=megha19.near,frol.near",
-//             TEST_DAO_ID
-//         ))
-//         .dispatch()
-//         .await;
-
-//     assert_eq!(response.status(), Status::Ok);
-
-//     let response_body = response.into_string().await.unwrap();
-//     let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-//     // Verify all returned proposals have one of the specified proposers
-//     let expected_proposers: HashSet<&str> = ["megha19.near", "frol.near"].iter().cloned().collect();
-
-//     if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-//         for proposal in proposals_array {
-//             let proposer = proposal.get("proposer").and_then(|p| p.as_str()).unwrap();
-//             assert!(
-//                 expected_proposers.contains(proposer),
-//                 "All proposals should have one of the specified proposers"
-//             );
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_proposers_not_filter() {
-//     let client = get_test_client().await;
-
-//     // Test proposers_not filter
-//     let response = client
-//         .get(format!(
-//             "/proposals/{}?proposers_not=megha19.near,frol.near",
-//             TEST_DAO_ID
-//         ))
-//         .dispatch()
-//         .await;
-
-//     assert_eq!(response.status(), Status::Ok);
-
-//     let response_body = response.into_string().await.unwrap();
-//     let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-//     // Verify all returned proposals do NOT have the excluded proposers
-//     let excluded_proposers: HashSet<&str> = ["megha19.near", "frol.near"].iter().cloned().collect();
-
-//     if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-//         for proposal in proposals_array {
-//             let proposer = proposal.get("proposer").and_then(|p| p.as_str()).unwrap();
-//             assert!(
-//                 !excluded_proposers.contains(proposer),
-//                 "All proposals should NOT have the excluded proposers"
-//             );
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_approvers_filter() {
-//     let client = get_test_client().await;
-
-//     // Test approvers filter
-//     let response = client
-//         .get(format!(
-//             "/proposals/{}?approvers=megha19.near,frol.near",
-//             TEST_DAO_ID
-//         ))
-//         .dispatch()
-//         .await;
-
-//     assert_eq!(response.status(), Status::Ok);
-
-//     let response_body = response.into_string().await.unwrap();
-//     let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-//     // Verify all returned proposals have votes from at least one of the specified approvers
-//     let expected_approvers: HashSet<&str> = ["megha19.near", "frol.near"].iter().cloned().collect();
-
-//     if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-//         for proposal in proposals_array {
-//             let votes = proposal.get("votes").and_then(|v| v.as_object()).unwrap();
-//             let has_any_approver = votes
-//                 .keys()
-//                 .any(|key| expected_approvers.contains(key.as_str()));
-//             assert!(
-//                 has_any_approver,
-//                 "All proposals should have votes from at least one of the specified approvers"
-//             );
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_approvers_not_filter() {
-//     let client = get_test_client().await;
-
-//     // Test approvers_not filter
-//     let response = client
-//         .get(format!(
-//             "/proposals/{}?approvers_not=megha19.near,frol.near",
-//             TEST_DAO_ID
-//         ))
-//         .dispatch()
-//         .await;
-
-//     assert_eq!(response.status(), Status::Ok);
-
-//     let response_body = response.into_string().await.unwrap();
-//     let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-//     // Verify all returned proposals do NOT have votes from the excluded approvers
-//     let excluded_approvers: HashSet<&str> = ["megha19.near", "frol.near"].iter().cloned().collect();
-
-//     if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-//         for proposal in proposals_array {
-//             let votes = proposal.get("votes").and_then(|v| v.as_object()).unwrap();
-//             let has_excluded_approver = votes
-//                 .keys()
-//                 .any(|key| excluded_approvers.contains(key.as_str()));
-//             assert!(
-//                 !has_excluded_approver,
-//                 "All proposals should NOT have votes from the excluded approvers"
-//             );
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_recipients_filter() {
-//     let client = get_test_client().await;
-
-//     // Test recipients filter for payments
-//     let response = client
-//         .get(format!(
-//             "/proposals/{}?category=payments&recipients=megha19.near",
-//             TEST_DAO_ID
-//         ))
-//         .dispatch()
-//         .await;
-
-//     assert_eq!(response.status(), Status::Ok);
-
-//     let response_body = response.into_string().await.unwrap();
-//     let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-//     // Verify all returned proposals have the specified recipient
-//     if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-//         for proposal in proposals_array {
-//             if let Some(payment_info) = extract_payment_info(proposal) {
-//                 assert_eq!(
-//                     payment_info.receiver, "megha19.near",
-//                     "Payment proposal should have correct recipient"
-//                 );
-//             }
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_recipients_not_filter() {
-//     let client = get_test_client().await;
-
-//     // Test recipients_not filter for payments
-//     let response = client
-//         .get(format!(
-//             "/proposals/{}?category=payments&recipients_not=megha19.near,frol.near",
-//             TEST_DAO_ID
-//         ))
-//         .dispatch()
-//         .await;
-
-//     assert_eq!(response.status(), Status::Ok);
-
-//     let response_body = response.into_string().await.unwrap();
-//     let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-//     // Verify all returned proposals do NOT have the excluded recipients
-//     if let Some(proposals_array) = proposals.get("proposals").and_then(|p| p.as_array()) {
-//         for proposal in proposals_array {
-//             if let Some(payment_info) = extract_payment_info(proposal) {
-//                 assert_ne!(
-//                     payment_info.receiver, "megha19.near",
-//                     "Payment proposal should NOT have excluded recipient"
-//                 );
-//                 assert_ne!(
-//                     payment_info.receiver, "frol.near",
-//                     "Payment proposal should NOT have excluded recipient"
-//                 );
-//             }
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_tokens_filter() {
-//     let client = get_test_client().await;
-
-//     // Test tokens filter for payments
-//     let response = client
-//         .get(format!(
-//             "/proposals/{}?category=payments&tokens=near",
-//             TEST_DAO_ID
-//         ))
-//         .dispatch()
-//         .await;
-
-//     assert_eq!(response.status(), Status::Ok);
-
-//     let response_body = response.into_string().await.unwrap();
-//     let proposals: serde_json::Value = serde_json::from_str(&response_body).unwrap();
-
-//     // Verify all returned proposals use the specified token
-//     if let Some(proposals_array) = get_proposals_array(&proposals) {
-//         for proposal in proposals_array {
-//             if let Some(payment_info) = extract_payment_info(proposal) {
-//                 let token_to_check = normalize_token(&payment_info.token);
-//                 assert_eq!(
-//                     token_to_check, "near",
-//                     "Payment proposal should have correct token"
-//                 );
-//             }
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_tokens_not_filter() {
-//     let client = get_test_client().await;
-
-//     // Test tokens_not filter for payments
-//     let response = make_request_and_parse(
-//         &client,
-//         &format!(
-//             "/proposals/{}?category=payments&tokens_not=near",
-//             TEST_DAO_ID
-//         ),
-//     )
-//     .await;
-
-//     // Verify all returned proposals do NOT use the excluded token
-//     if let Some(proposals_array) = get_proposals_array(&response) {
-//         for proposal in proposals_array {
-//             if let Some(payment_info) = extract_payment_info(proposal) {
-//                 let token_to_check = normalize_token(&payment_info.token);
-//                 assert_ne!(
-//                     token_to_check, "near",
-//                     "Payment proposal should NOT have excluded token"
-//                 );
-//             }
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_amount_filters() {
-//     let client = get_test_client().await;
-
-//     // Test amount_min filter
-//     let response = make_request_and_parse(
-//         &client,
-//         &format!(
-//             "/proposals/{}?category=payments&amount_min=1000000000000000000000000",
-//             TEST_DAO_ID
-//         ),
-//     )
-//     .await;
-
-//     // Verify all returned proposals have amounts >= min
-//     if let Some(proposals_array) = get_proposals_array(&response) {
-//         for proposal in proposals_array {
-//             if let Some(payment_info) = extract_payment_info(proposal) {
-//                 if let Ok(amount_u128) = payment_info.amount.parse::<u128>() {
-//                     assert!(
-//                         amount_u128 >= 1000000000000000000000000,
-//                         "Payment proposal amount should be >= min range"
-//                     );
-//                 }
-//             }
-//         }
-//     }
-
-//     // Test amount_max filter
-//     let response = make_request_and_parse(
-//         &client,
-//         &format!(
-//             "/proposals/{}?category=payments&amount_max=10000000000000000000000000",
-//             TEST_DAO_ID
-//         ),
-//     )
-//     .await;
-
-//     // Verify all returned proposals have amounts <= max
-//     if let Some(proposals_array) = get_proposals_array(&response) {
-//         for proposal in proposals_array {
-//             if let Some(payment_info) = extract_payment_info(proposal) {
-//                 if let Ok(amount_u128) = payment_info.amount.parse::<u128>() {
-//                     assert!(
-//                         amount_u128 <= 10000000000000000000000000,
-//                         "Payment proposal amount should be <= max range"
-//                     );
-//                 }
-//             }
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_pagination() {
-//     let client = get_test_client().await;
-
-//     // Test pagination
-//     let response = make_request_and_parse(
-//         &client,
-//         &format!("/proposals/{}?page=0&page_size=5", TEST_DAO_ID),
-//     )
-//     .await;
-
-//     // Verify pagination fields are present
-//     assert!(
-//         response.get("page").is_some(),
-//         "Response should have page field"
-//     );
-//     assert!(
-//         response.get("page_size").is_some(),
-//         "Response should have page_size field"
-//     );
-//     assert!(
-//         response.get("total").is_some(),
-//         "Response should have total field"
-//     );
-//     assert!(
-//         response.get("proposals").is_some(),
-//         "Response should have proposals field"
-//     );
-
-//     // Verify page_size is respected
-//     if let Some(proposals_array) = get_proposals_array(&response) {
-//         assert!(
-//             proposals_array.len() <= 5,
-//             "Number of proposals should not exceed page_size"
-//         );
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_multiple_filters() {
-//     let client = get_test_client().await;
-
-//     // Test multiple filters together
-//     let response = make_request_and_parse(
-//         &client,
-//         &format!(
-//             "/proposals/{}?statuses=Approved&category=payments&proposers=megha19.near&page_size=10",
-//             TEST_DAO_ID
-//         ),
-//     )
-//     .await;
-
-//     // Verify all returned proposals meet all filter criteria
-//     if let Some(proposals_array) = get_proposals_array(&response) {
-//         for proposal in proposals_array {
-//             // Check status
-//             let status = proposal.get("status").and_then(|s| s.as_str()).unwrap();
-//             assert_eq!(
-//                 status, "Approved",
-//                 "All proposals should have Approved status"
-//             );
-
-//             // Check proposer
-//             let proposer = proposal.get("proposer").and_then(|p| p.as_str()).unwrap();
-//             assert_eq!(
-//                 proposer, "megha19.near",
-//                 "All proposals should have the specified proposer"
-//             );
-
-//             // Check category (payment proposals)
-//             assert!(
-//                 extract_payment_info(proposal).is_some(),
-//                 "All proposals should be payment proposals"
-//             );
-//         }
-//     }
-// }
-
-// #[tokio::test]
-// async fn test_requested_tokens_endpoint() {
-//     let client = get_test_client().await;
-
-//     // Test requested tokens endpoint
-//     let response = make_request_and_parse(
-//         &client,
-//         &format!("/proposals/{}/requested-tokens", TEST_DAO_ID),
-//     )
-//     .await;
-
-//     // Verify response structure
-//     assert!(
-//         response.get("requested_tokens").is_some(),
-//         "Response should have requested_tokens field"
-//     );
-//     assert!(
-//         response.get("total").is_some(),
-//         "Response should have total field"
-//     );
-
-//     // Verify tokens array
-//     if let Some(tokens_array) = response.get("requested_tokens").and_then(|t| t.as_array()) {
-//         for token in tokens_array {
-//             assert!(token.is_string(), "Each token should be a string");
-//         }
-//     }
-
-//     // Verify total count matches array length
-//     if let (Some(tokens_array), Some(total)) = (
-//         response.get("requested_tokens").and_then(|t| t.as_array()),
-//         response.get("total").and_then(|t| t.as_u64()),
-//     ) {
-//         assert_eq!(
-//             tokens_array.len() as u64,
-//             total,
-//             "Total count should match array length"
-//         );
-//     }
-// }
