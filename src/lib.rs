@@ -19,12 +19,27 @@ use std::sync::{Arc, RwLock};
 use cache::{
     FtMetadataCache, ProposalCache, ProposalStore, get_latest_dao_cache, get_latest_proposal_cache,
 };
+
+// Helper function to get cached data with consistent error handling
+async fn get_cached_data(
+    dao_id: &AccountId,
+    client: &Arc<near_jsonrpc_client::JsonRpcClient>,
+    store: &ProposalStore,
+) -> Result<cache::CachedProposals, Status> {
+    match get_latest_dao_cache(client, store, dao_id).await {
+        Ok(cache) => Ok(cache),
+        Err(e) => {
+            eprintln!("Failed to get latest DAO cache: {:?}", e);
+            Err(Status::NotFound)
+        }
+    }
+}
 use filters::{ProposalFilters, categories};
 use persistence::{CachePersistence, read_cache_from_file};
 use scraper::{
     AssetExchangeInfo, AssetExchangeProposalFormatter, DefaultFormatter, LockupInfo,
     LockupProposalFormatter, PaymentInfo, Proposal, ProposalCsvFormatterAsync,
-    ProposalCsvFormatterSync, StakeDelegationInfo, StakeDelegationProposalFormatter,
+    ProposalCsvFormatterSync, ProposalType, StakeDelegationInfo, StakeDelegationProposalFormatter,
     TransferProposalFormatter, TxMetadata,
 };
 
@@ -49,30 +64,55 @@ pub struct PaginatedProposals {
     pub page_size: usize,
 }
 
+#[derive(Serialize)]
+pub struct ProposersResponse {
+    pub proposers: Vec<String>,
+    pub total: usize,
+}
+
+#[derive(Serialize)]
+pub struct ApproversResponse {
+    pub approvers: Vec<String>,
+    pub total: usize,
+}
+
+#[derive(Serialize)]
+pub struct RecipientsResponse {
+    pub recipients: Vec<String>,
+    pub total: usize,
+}
+
+#[derive(Serialize)]
+pub struct RequestedTokensResponse {
+    pub requested_tokens: Vec<String>,
+    pub total: usize,
+}
+
 #[get("/proposals/<dao_id>?<filters..>")]
-pub async fn get_dao_proposals(
+pub async fn get_proposals(
     dao_id: &str,
     filters: ProposalFilters,
     store: &State<ProposalStore>,
+    ft_metadata_cache: &State<FtMetadataCache>,
 ) -> Result<Json<PaginatedProposals>, Status> {
     let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
     let client = rpc_client::get_rpc_client();
 
     // Get cached data
-    let cached = match get_latest_dao_cache(&client, &store, &dao_id).await {
-        Ok(cache) => cache,
-        Err(e) => {
-            eprintln!("Failed to get latest DAO cache: {:?}", e);
-            return Err(Status::NotFound);
-        }
-    };
+    let cached = get_cached_data(&dao_id, &client, &store).await?;
 
     // Apply filters
-    let filtered_proposals = filters.filter_proposals(cached.proposals, &cached.policy);
+    let filtered_proposals = filters
+        .filter_proposals_async(cached.proposals, &cached.policy, &ft_metadata_cache)
+        .await
+        .map_err(|e| {
+            eprintln!("Error filtering proposals: {}", e);
+            Status::InternalServerError
+        })?;
     let total = filtered_proposals.len();
 
     // Handle pagination
-    let paginated: Vec<Proposal> = match (filters.page, filters.page_size) {
+    let proposals = match (filters.page, filters.page_size) {
         (Some(page), Some(page_size)) => {
             // Frontend sends 0-based page numbers
             let start = page * page_size;
@@ -84,18 +124,18 @@ pub async fn get_dao_proposals(
                 vec![]
             }
         }
-        _ => filtered_proposals.clone(),
+        _ => filtered_proposals,
     };
 
     Ok(Json(PaginatedProposals {
-        proposals: paginated,
+        proposals,
         total,
-        page: filters.page.unwrap_or(1),
+        page: filters.page.unwrap_or(0),
         page_size: filters.page_size.unwrap_or(total),
     }))
 }
 
-#[get("/proposals/<dao_id>/<proposal_id>")]
+#[get("/proposal/<dao_id>/<proposal_id>")]
 pub async fn get_specific_proposal(
     dao_id: &str,
     proposal_id: u64,
@@ -110,6 +150,129 @@ pub async fn get_specific_proposal(
     Ok(Json(ProposalOutput {
         proposal: proposal_cached.proposal,
         txs_log: proposal_cached.txs_log,
+    }))
+}
+
+#[get("/proposals/<dao_id>/proposers")]
+pub async fn get_dao_proposers(
+    dao_id: &str,
+    store: &State<ProposalStore>,
+) -> Result<Json<ProposersResponse>, Status> {
+    let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
+    let client = rpc_client::get_rpc_client();
+
+    let cached = get_cached_data(&dao_id, &client, &store).await?;
+
+    // Extract unique proposers from all proposals
+    let mut proposers: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for proposal in &cached.proposals {
+        proposers.insert(proposal.proposer.clone());
+    }
+
+    let mut proposers_vec: Vec<String> = proposers.into_iter().collect();
+    proposers_vec.sort_unstable(); // Sort alphabetically for consistent ordering
+
+    let total = proposers_vec.len();
+
+    Ok(Json(ProposersResponse {
+        proposers: proposers_vec,
+        total,
+    }))
+}
+
+#[get("/proposals/<dao_id>/approvers")]
+pub async fn get_dao_approvers(
+    dao_id: &str,
+    store: &State<ProposalStore>,
+) -> Result<Json<ApproversResponse>, Status> {
+    let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
+    let client = rpc_client::get_rpc_client();
+
+    let cached = get_cached_data(&dao_id, &client, &store).await?;
+
+    // Extract unique approvers from all proposals
+    let mut approvers: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for proposal in &cached.proposals {
+        // Add all voters from the votes HashMap
+        for (voter, _) in &proposal.votes {
+            approvers.insert(voter.clone());
+        }
+    }
+
+    let mut approvers_vec: Vec<String> = approvers.into_iter().collect();
+    approvers_vec.sort_unstable(); // Sort alphabetically for consistent ordering
+
+    let total = approvers_vec.len();
+
+    Ok(Json(ApproversResponse {
+        approvers: approvers_vec,
+        total,
+    }))
+}
+
+#[get("/proposals/<dao_id>/recipients")]
+pub async fn get_dao_recipients(
+    dao_id: &str,
+    store: &State<ProposalStore>,
+) -> Result<Json<RecipientsResponse>, Status> {
+    let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
+    let client = rpc_client::get_rpc_client();
+
+    let cached = get_cached_data(&dao_id, &client, &store).await?;
+
+    // Extract unique recipients from transfer proposals only
+    let mut recipients: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for proposal in &cached.proposals {
+        // Check if this is a transfer proposal
+        if let Some(payment_info) = scraper::PaymentInfo::from_proposal(proposal) {
+            recipients.insert(payment_info.receiver);
+        }
+    }
+
+    let mut recipients_vec: Vec<String> = recipients.into_iter().collect();
+    recipients_vec.sort_unstable(); // Sort alphabetically for consistent ordering
+
+    let total = recipients_vec.len();
+
+    Ok(Json(RecipientsResponse {
+        recipients: recipients_vec,
+        total,
+    }))
+}
+
+#[get("/proposals/<dao_id>/requested-tokens")]
+pub async fn get_dao_requested_tokens(
+    dao_id: &str,
+    store: &State<ProposalStore>,
+) -> Result<Json<RequestedTokensResponse>, Status> {
+    let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
+    let client = rpc_client::get_rpc_client();
+
+    let cached = get_cached_data(&dao_id, &client, &store).await?;
+
+    // Extract unique request tokens from transfer proposals only
+    let mut request_tokens: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for proposal in &cached.proposals {
+        // Check if this is a transfer proposal
+        if let Some(payment_info) = scraper::PaymentInfo::from_proposal(proposal) {
+            // Map empty string to "near" for NEAR tokens
+            let token = if payment_info.token.is_empty() {
+                "near".to_string()
+            } else {
+                payment_info.token
+            };
+            request_tokens.insert(token);
+        }
+    }
+
+    let mut request_tokens_vec: Vec<String> = request_tokens.into_iter().collect();
+    request_tokens_vec.sort_unstable(); // Sort alphabetically for consistent ordering
+
+    let total = request_tokens_vec.len();
+
+    Ok(Json(RequestedTokensResponse {
+        requested_tokens: request_tokens_vec,
+        total,
     }))
 }
 
@@ -150,6 +313,14 @@ pub async fn csv_proposals(
         .await
         .map_err(|_| Status::NotFound)?;
 
+    let proposals = filters
+        .filter_proposals_async(cached.proposals, &cached.policy, &ft_metadata_cache)
+        .await
+        .map_err(|e| {
+            eprintln!("Error filtering proposals for CSV: {}", e);
+            Status::InternalServerError
+        })?;
+
     // Check if DAO has a lockup account (for payments or stake delegation category)
     let has_lockup_account = match filters.category.as_deref() {
         Some(categories::PAYMENTS) | Some(categories::STAKE_DELEGATION) => {
@@ -175,7 +346,7 @@ pub async fn csv_proposals(
 
     match filters.category.as_deref() {
         Some(categories::PAYMENTS) => {
-            let extracted = filters.filter_and_extract::<PaymentInfo>(cached.proposals);
+            let extracted = filters.filter_and_extract::<PaymentInfo>(proposals);
             let formatter = TransferProposalFormatter;
             let mut headers = formatter.headers();
             if !has_lockup_account {
@@ -204,7 +375,7 @@ pub async fn csv_proposals(
             }
         }
         Some(categories::LOCKUP) => {
-            let extracted = filters.filter_and_extract::<LockupInfo>(cached.proposals);
+            let extracted = filters.filter_and_extract::<LockupInfo>(proposals);
             let formatter = LockupProposalFormatter;
             let headers = formatter.headers();
             write_headers(&mut wtr, &headers)?;
@@ -217,7 +388,7 @@ pub async fn csv_proposals(
             }
         }
         Some(categories::ASSET_EXCHANGE) => {
-            let extracted = filters.filter_and_extract::<AssetExchangeInfo>(cached.proposals);
+            let extracted = filters.filter_and_extract::<AssetExchangeInfo>(proposals);
             let formatter = AssetExchangeProposalFormatter;
             let headers = formatter.headers();
             write_headers(&mut wtr, &headers)?;
@@ -238,7 +409,7 @@ pub async fn csv_proposals(
             }
         }
         Some(categories::STAKE_DELEGATION) => {
-            let extracted = filters.filter_and_extract::<StakeDelegationInfo>(cached.proposals);
+            let extracted = filters.filter_and_extract::<StakeDelegationInfo>(proposals);
             let formatter = StakeDelegationProposalFormatter;
             let mut headers = formatter.headers();
             if !has_lockup_account {
@@ -271,7 +442,7 @@ pub async fn csv_proposals(
             let formatter = DefaultFormatter;
             let headers = formatter.headers();
             write_headers(&mut wtr, &headers)?;
-            for proposal in filters.filter_proposals(cached.proposals, &cached.policy) {
+            for proposal in proposals {
                 let record = formatter.format(&proposal, &cached.policy, &());
                 if record.is_empty() {
                     continue;
@@ -304,12 +475,15 @@ pub fn rocket() -> rocket::Rocket<rocket::Build> {
 
     // Configure CORS
     let cors = CorsOptions::default()
-        .allowed_origins(AllowedOrigins::some_exact(&[
-            "http://localhost:8080",
-            "http://localhost:5001",
-            "http://127.0.0.1:8080",
-            "https://sputnik-indexer-divine-fog-3863.fly.dev",
-            "https://sputnik-indexer.fly.dev",
+        .allowed_origins(AllowedOrigins::some_regex(&[
+            r"https?://.*\.near\.page",
+            r"https?://near\.social",
+            r"https?://near\.org",
+            r"https?://localhost:8080",
+            r"https?://localhost:5001",
+            r"https?://127\.0\.0\.1:8080",
+            r"https?://sputnik-indexer-divine-fog-3863\.fly\.dev",
+            r"https?://sputnik-indexer\.fly\.dev",
         ]))
         .allow_credentials(true)
         .to_cors()
@@ -321,7 +495,15 @@ pub fn rocket() -> rocket::Rocket<rocket::Build> {
         .manage(ft_metadata_cache)
         .mount(
             "/",
-            routes![get_dao_proposals, get_specific_proposal, csv_proposals],
+            routes![
+                get_proposals,
+                get_specific_proposal,
+                get_dao_proposers,
+                get_dao_approvers,
+                get_dao_recipients,
+                get_dao_requested_tokens,
+                csv_proposals
+            ],
         )
         .attach(cache_persistence)
         .attach(cors)
