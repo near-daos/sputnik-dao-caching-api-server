@@ -65,7 +65,6 @@ fn extract_payment_info(proposal: &serde_json::Value) -> Option<PaymentInfo> {
                 if method_name == "ft_transfer" {
                     if let Some(args_b64) = action.get("args").and_then(|a| a.as_str()) {
                         if let Ok(decoded_bytes) = STANDARD.decode(args_b64) {
-                            let decoded_bytes = decoded_bytes;
                             if let Ok(json_args) =
                                 serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
                             {
@@ -87,6 +86,62 @@ fn extract_payment_info(proposal: &serde_json::Value) -> Option<PaymentInfo> {
                                     token,
                                     amount,
                                 });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for ft_withdraw method (Intents payments)
+        if receiver_id == "intents.near" {
+            for action in actions {
+                if let Some(method_name) = action.get("method_name").and_then(|m| m.as_str()) {
+                    if method_name == "ft_withdraw" {
+                        if let Some(args_b64) = action.get("args").and_then(|a| a.as_str()) {
+                            if let Ok(decoded_bytes) = STANDARD.decode(args_b64) {
+                                if let Ok(json_args) =
+                                    serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
+                                {
+                                    let token = json_args
+                                        .get("token")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let amount = json_args
+                                        .get("amount")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let receiver = if let Some(memo) =
+                                        json_args.get("memo").and_then(|v| v.as_str())
+                                    {
+                                        if memo.contains("WITHDRAW_TO:") {
+                                            memo.split("WITHDRAW_TO:")
+                                                .nth(1)
+                                                .unwrap_or("")
+                                                .to_string()
+                                        } else {
+                                            json_args
+                                                .get("receiver_id")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_string()
+                                        }
+                                    } else {
+                                        json_args
+                                            .get("receiver_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string()
+                                    };
+
+                                    return Some(PaymentInfo {
+                                        receiver,
+                                        token,
+                                        amount,
+                                    });
+                                }
                             }
                         }
                     }

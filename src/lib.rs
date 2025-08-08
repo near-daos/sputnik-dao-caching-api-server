@@ -509,7 +509,13 @@ pub fn rocket() -> rocket::Rocket<rocket::Build> {
         .attach(cors)
         .configure(
             rocket::Config::figment()
-                .merge(("port", 5001))
+                .merge((
+                    "port",
+                    std::env::var("PORT")
+                        .unwrap_or("5001".to_string())
+                        .parse::<u16>()
+                        .unwrap_or(5001),
+                ))
                 .merge(("address", "0.0.0.0")),
         )
 }

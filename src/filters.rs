@@ -142,34 +142,7 @@ impl ProposalFilters {
         let mut filtered_proposals = Vec::with_capacity(proposals.len());
 
         for proposal in proposals {
-            // Cache expensive computations
             let submission_time = proposal.submission_time.0;
-            let description_lower = if search_keywords.is_some() {
-                proposal.description.to_lowercase()
-            } else {
-                String::new() // Won't be used
-            };
-            let proposal_kind_keys = if proposal_types_set.is_some() {
-                proposal
-                    .kind
-                    .as_object()
-                    .map(|obj| obj.keys().map(|k| k.as_str()).collect::<Vec<&str>>())
-                    .unwrap_or_default()
-            } else {
-                Vec::new() // Won't be used
-            };
-
-            if let Some(ref statuses) = statuses_set {
-                let computed_status = get_status_display(
-                    &proposal.status,
-                    submission_time,
-                    policy.proposal_period.0,
-                    "InProgress",
-                );
-                if !statuses.contains(computed_status.as_str()) {
-                    continue;
-                }
-            }
 
             if let Some(ref proposers) = proposers_set {
                 if !proposers.contains(proposal.proposer.as_str()) {
@@ -179,32 +152,6 @@ impl ProposalFilters {
 
             if let Some(ref proposers_not) = proposers_not_set {
                 if proposers_not.contains(proposal.proposer.as_str()) {
-                    continue;
-                }
-            }
-
-            if let Some(ref keywords) = search_keywords {
-                if !keywords.iter().any(|kw| description_lower.contains(kw)) {
-                    continue;
-                }
-            }
-
-            if let Some(ref proposal_types) = proposal_types_set {
-                if !proposal_types
-                    .iter()
-                    .any(|proposal_type| proposal_kind_keys.contains(proposal_type))
-                {
-                    continue;
-                }
-            }
-
-            if let Some(from_ts) = from_timestamp {
-                if submission_time < from_ts {
-                    continue;
-                }
-            }
-            if let Some(to_ts) = to_timestamp {
-                if submission_time > to_ts {
                     continue;
                 }
             }
@@ -226,6 +173,62 @@ impl ProposalFilters {
                     continue;
                 }
             }
+
+            if let Some(from_ts) = from_timestamp {
+                if submission_time < from_ts {
+                    continue;
+                }
+            }
+            if let Some(to_ts) = to_timestamp {
+                if submission_time > to_ts {
+                    continue;
+                }
+            }
+
+            if let Some(ref statuses) = statuses_set {
+                let computed_status = get_status_display(
+                    &proposal.status,
+                    submission_time,
+                    policy.proposal_period.0,
+                    "InProgress",
+                );
+                if !statuses.contains(computed_status.as_str()) {
+                    continue;
+                }
+            }
+
+            if let Some(ref keywords) = search_keywords {
+                let proposal_id_str = proposal.id.to_string();
+
+                if !keywords.iter().any(|kw| {
+                    // If keyword is only numbers, search for exact proposal ID match
+                    if kw.chars().all(|c| c.is_ascii_digit()) {
+                        proposal_id_str == *kw
+                    } else {
+                        // Otherwise search in both description and proposal ID
+                        proposal.description.to_lowercase().contains(kw)
+                            || proposal_id_str.to_lowercase().contains(kw)
+                    }
+                }) {
+                    continue;
+                }
+            }
+
+            if let Some(ref proposal_types) = proposal_types_set {
+                let proposal_kind_keys: Vec<&str> = proposal
+                    .kind
+                    .as_object()
+                    .map(|obj| obj.keys().map(|k| k.as_str()).collect())
+                    .unwrap_or_default();
+
+                if !proposal_types
+                    .iter()
+                    .any(|proposal_type| proposal_kind_keys.contains(proposal_type))
+                {
+                    continue;
+                }
+            }
+
             if let Some(ref voter_votes) = voter_votes_set {
                 let mut all_voter_checks_passed = true;
                 for voter_vote in voter_votes {
