@@ -16,7 +16,7 @@ use crate::scraper::{
     fetch_ft_metadata, fetch_policy, fetch_proposal, fetch_proposal_log_txs, fetch_proposals,
 };
 
-const CACHE_LIFE_TIME: Duration = Duration::from_secs(5);
+const CACHE_LIFE_TIME: Duration = Duration::from_secs(1);
 const FT_CACHE_LIFETIME: Duration = Duration::from_secs(60 * 60); // 60 minutes
 
 #[derive(Clone, Debug)]
