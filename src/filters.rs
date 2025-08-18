@@ -1,4 +1,4 @@
-use crate::cache::{FtMetadataCache, get_ft_metadata_cache};
+use crate::cache::{FtMetadataCache, StakingPoolCache, get_ft_metadata_cache};
 use crate::scraper::{
     AssetExchangeInfo, LockupInfo, PaymentInfo, Policy, Proposal, ProposalType,
     StakeDelegationInfo, get_status_display,
@@ -68,6 +68,12 @@ pub struct ProposalFilters {
     pub amount_min: Option<String>,
     pub amount_max: Option<String>,
     pub amount_equal: Option<String>,
+    // Stake delegation specific filters
+    pub stake_amount_min: Option<String>,
+    pub stake_amount_max: Option<String>,
+    pub stake_amount_equal: Option<String>,
+    pub stake_type: Option<String>, // comma-separated values like "stake,unstake,withdraw,whitelist"
+    pub validators: Option<String>, // comma-separated validator accounts
     // Pagination
     pub page: Option<usize>,
     pub page_size: Option<usize>,
@@ -110,6 +116,7 @@ impl ProposalFilters {
         ft_metadata_cache: &FtMetadataCache,
     ) -> Result<Vec<Proposal>, Box<dyn std::error::Error>> {
         let client = Arc::new(JsonRpcClient::connect("https://rpc.mainnet.near.org"));
+        let staking_pool_cache = StakingPoolCache::new();
 
         let statuses_set = to_str_hashset(&self.statuses);
         let proposers_set = to_str_hashset(&self.proposers);
@@ -122,6 +129,8 @@ impl ProposalFilters {
         let tokens_set = to_str_hashset(&self.tokens);
         let tokens_not_set = to_str_hashset(&self.tokens_not);
         let proposal_types_set = to_str_hashset(&self.proposal_types);
+        let stake_type_set = to_str_hashset(&self.stake_type);
+        let validators_set = to_str_hashset(&self.validators);
 
         let search_keywords: Option<Vec<String>> = self.search.as_ref().map(|s| {
             s.split(',')
@@ -199,15 +208,15 @@ impl ProposalFilters {
 
             if let Some(ref keywords) = search_keywords {
                 let proposal_id_str = proposal.id.to_string();
+                let description_lower = proposal.description.to_lowercase();
+                let proposal_id_lower = proposal_id_str.to_lowercase();
 
                 if !keywords.iter().any(|kw| {
                     // If keyword is only numbers, search for exact proposal ID match
                     if kw.chars().all(|c| c.is_ascii_digit()) {
                         proposal_id_str == *kw
                     } else {
-                        // Otherwise search in both description and proposal ID
-                        proposal.description.to_lowercase().contains(kw)
-                            || proposal_id_str.to_lowercase().contains(kw)
+                        description_lower.contains(kw) || proposal_id_lower.contains(kw)
                     }
                 }) {
                     continue;
@@ -215,11 +224,11 @@ impl ProposalFilters {
             }
 
             if let Some(ref proposal_types) = proposal_types_set {
-                let proposal_kind_keys: Vec<&str> = proposal
-                    .kind
-                    .as_object()
-                    .map(|obj| obj.keys().map(|k| k.as_str()).collect())
-                    .unwrap_or_default();
+                let proposal_kind_keys: Vec<&str> = if let Some(obj) = proposal.kind.as_object() {
+                    obj.keys().map(|k| k.as_str()).collect()
+                } else {
+                    Vec::new()
+                };
 
                 if !proposal_types
                     .iter()
@@ -269,8 +278,89 @@ impl ProposalFilters {
                         }
                     }
                     categories::STAKE_DELEGATION => {
-                        if StakeDelegationInfo::from_proposal(&proposal).is_none() {
-                            continue;
+                        if let Some(stake_info) = StakeDelegationInfo::from_proposal(&proposal) {
+                            // Filter by stake type
+                            if let Some(ref stake_types) = stake_type_set {
+                                if !stake_types.contains(stake_info.proposal_type.as_str()) {
+                                    continue;
+                                }
+                            }
+
+                            // For lockup proposals, we need to get the validator from RPC if not already set
+                            let mut validator_to_check = stake_info.validator.clone();
+                            if stake_info.validator.contains("lockup.near")
+                                && stake_info.proposal_type != "whitelist"
+                            {
+                                // This is a lockup proposal that's not a select_staking_pool call
+                                // We need to get the validator from the lockup contract
+                                if let Some(pool_id) = staking_pool_cache
+                                    .get_staking_pool_account_id(&client, &stake_info.validator)
+                                    .await
+                                {
+                                    validator_to_check = pool_id;
+                                }
+                            }
+
+                            // Filter by validator
+                            if let Some(ref validators) = validators_set {
+                                if !validators.contains(validator_to_check.as_str()) {
+                                    continue;
+                                }
+                            }
+
+                            // Filter by amount (convert NEAR to yocto NEAR)
+                            if self.stake_amount_min.is_some()
+                                || self.stake_amount_max.is_some()
+                                || self.stake_amount_equal.is_some()
+                            {
+                                let stake_amount = stake_info.amount.parse::<u128>().ok();
+
+                                if let Some(min_str) = &self.stake_amount_min {
+                                    if let Some(min) = convert_to_smallest_unit(min_str, 24) {
+                                        if let Some(amount) = stake_amount {
+                                            if amount < min {
+                                                continue;
+                                            }
+                                        } else {
+                                            continue; // Invalid amount
+                                        }
+                                    } else {
+                                        continue; // Invalid amount_min input
+                                    }
+                                }
+
+                                if let Some(max_str) = &self.stake_amount_max {
+                                    if let Some(max) = convert_to_smallest_unit(max_str, 24) {
+                                        // NEAR has 24 decimals
+                                        if let Some(amount) = stake_amount {
+                                            if amount > max {
+                                                continue;
+                                            }
+                                        } else {
+                                            continue; // Invalid amount
+                                        }
+                                    } else {
+                                        continue; // Invalid amount_max input
+                                    }
+                                }
+
+                                if let Some(equal_str) = &self.stake_amount_equal {
+                                    if let Some(equal) = convert_to_smallest_unit(equal_str, 24) {
+                                        // NEAR has 24 decimals
+                                        if let Some(amount) = stake_amount {
+                                            if amount != equal {
+                                                continue;
+                                            }
+                                        } else {
+                                            continue; // Invalid amount
+                                        }
+                                    } else {
+                                        continue; // Invalid amount_equal input
+                                    }
+                                }
+                            }
+                        } else {
+                            continue; // Not a stake delegation proposal
                         }
                     }
                     categories::PAYMENTS => {

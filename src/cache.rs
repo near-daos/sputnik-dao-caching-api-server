@@ -232,3 +232,48 @@ pub async fn get_ft_metadata_cache(
     );
     Ok(metadata)
 }
+
+#[derive(Clone)]
+pub struct StakingPoolCache {
+    cache: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
+}
+
+impl Default for StakingPoolCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StakingPoolCache {
+    pub fn new() -> Self {
+        Self {
+            cache: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub async fn get_staking_pool_account_id(
+        &self,
+        client: &JsonRpcClient,
+        lockup_account: &str,
+    ) -> Option<String> {
+        // Check cache first
+        {
+            let cache = self.cache.read().await;
+            if let Some(pool_id) = cache.get(lockup_account) {
+                return Some(pool_id.clone());
+            }
+        }
+
+        // Make RPC call if not in cache
+        if let Some(pool_id) =
+            crate::rpc_client::get_staking_pool_account_id(client, lockup_account).await
+        {
+            // Store in cache - lockup_account is the key, pool_id is the value
+            let mut cache = self.cache.write().await;
+            cache.insert(lockup_account.to_string(), pool_id.clone());
+            Some(pool_id)
+        } else {
+            None
+        }
+    }
+}

@@ -607,14 +607,23 @@ fn format_votes(votes: &HashMap<String, Vote>) -> FormattedVotes {
 pub fn extract_from_description(desc: &str, key: &str) -> Option<String> {
     let key_normalized = key.to_lowercase().replace(' ', "");
 
-    // 1) Try parsing JSON
-    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(desc) {
-        for (k, v) in json_val.as_object()? {
-            if k.to_lowercase().replace(' ', "") == key_normalized {
-                return v
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .or_else(|| Some(v.to_string()));
+    // Early return for description key
+    if key_normalized == "description" {
+        return Some(desc.to_string());
+    }
+
+    // 1) Try parsing JSON (only if description looks like JSON)
+    if desc.trim().starts_with('{') && desc.trim().ends_with('}') {
+        if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(desc) {
+            if let Some(obj) = json_val.as_object() {
+                for (k, v) in obj {
+                    if k.to_lowercase().replace(' ', "") == key_normalized {
+                        return v
+                            .as_str()
+                            .map(|s| s.to_string())
+                            .or_else(|| Some(v.to_string()));
+                    }
+                }
             }
         }
     }
@@ -638,12 +647,7 @@ pub fn extract_from_description(desc: &str, key: &str) -> Option<String> {
         }
     }
 
-    // Fallback for full description
-    if key_normalized == "description" {
-        Some(desc.to_string())
-    } else {
-        None
-    }
+    None
 }
 
 fn get_current_time_nanos() -> U64 {
@@ -965,19 +969,18 @@ impl ProposalCsvFormatterAsync<StakeDelegationInfo> for StakeDelegationProposalF
 
     fn format<'a>(
         &'a self,
-        client: &'a Arc<JsonRpcClient>,
+        _client: &'a Arc<JsonRpcClient>,
         _ft_metadata_cache: &'a FtMetadataCache,
         proposal: &'a Proposal,
         policy: &'a Policy,
-        _info: &'a StakeDelegationInfo,
+        info: &'a StakeDelegationInfo,
     ) -> BoxFuture<'a, Vec<String>> {
         async move {
             let notes =
                 extract_from_description(&proposal.description, "notes").unwrap_or_default();
-            let withdraw_amount =
-                extract_from_description(&proposal.description, "amount").unwrap_or_default();
             let _custom_notes =
                 extract_from_description(&proposal.description, "customNotes").unwrap_or_default();
+
             let receiver_account = proposal
                 .kind
                 .get("FunctionCall")
@@ -985,99 +988,23 @@ impl ProposalCsvFormatterAsync<StakeDelegationInfo> for StakeDelegationProposalF
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let actions = proposal
-                .kind
-                .get("FunctionCall")
-                .and_then(|fc| fc.get("actions"))
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let action = actions.get(0).cloned().unwrap_or_default();
-            let method_name = action
-                .get("method_name")
-                .and_then(|m| m.as_str())
-                .unwrap_or("");
-            let is_stake_request = method_name == "deposit_and_stake";
-            let mut validator_account = receiver_account.clone();
-            let mut amount = action
-                .get("deposit")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let token = "NEAR".to_string();
-            // If lockup, get validator from args or fetch from RPC
-            if validator_account.contains("lockup.near") {
-                let args_b64 = action.get("args").and_then(|a| a.as_str()).unwrap_or("");
-                let mut found_in_args = false;
-                if let Ok(decoded_bytes) =
-                    base64::engine::general_purpose::STANDARD.decode(args_b64)
-                {
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decoded_bytes) {
-                        if let Some(val) =
-                            json.get("staking_pool_account_id").and_then(|v| v.as_str())
-                        {
-                            validator_account = val.to_string();
-                            found_in_args = true;
-                        }
-                        if !is_stake_request {
-                            amount = json
-                                .get("amount")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                        }
-                    }
-                }
-                if !found_in_args {
-                    // Fetch from RPC
-                    if let Some(pool_id) =
-                        crate::rpc_client::get_staking_pool_account_id(client, &validator_account)
-                            .await
-                    {
-                        validator_account = pool_id;
-                    }
-                }
-            } else {
-                let args_b64 = action.get("args").and_then(|a| a.as_str()).unwrap_or("");
-                if let Ok(decoded_bytes) =
-                    base64::engine::general_purpose::STANDARD.decode(args_b64)
-                {
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decoded_bytes) {
-                        amount = json
-                            .get("amount")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                    }
-                }
-            }
-            let is_withdraw_request =
-                method_name == "withdraw_all_from_staking_pool" || method_name == "withdraw_all";
-            if is_withdraw_request {
-                amount = withdraw_amount.clone();
-            }
+
             let is_lockup = receiver_account.contains("lockup.near");
             let treasury_wallet = if is_lockup {
                 "Lockup".to_string()
             } else {
                 "Sputnik DAO".to_string()
             };
-            let proposal_type = if method_name == "unstake" {
-                "Unstake"
-            } else if method_name == "deposit_and_stake" {
-                "Stake"
-            } else if method_name == "withdraw_all"
-                || method_name == "withdraw_all_from_staking_pool"
-            {
-                "Withdraw"
-            } else if method_name == "select_staking_pool" {
-                "Whitelist"
-            } else if method_name == "unselect_staking_pool" {
-                "Unselect"
-            } else {
-                "Unknown"
+
+            let proposal_type = match info.proposal_type.as_str() {
+                "stake" => "Stake",
+                "unstake" => "Unstake",
+                "withdraw" => "Withdraw",
+                "whitelist" => "Whitelist",
+                _ => "Unknown",
             };
-            let parsed_amount = format!("{}", normalize_token_amount(&amount, 24));
+
+            let parsed_amount = format!("{}", normalize_token_amount(&info.amount, 24));
             let formatted_votes = format_votes(&proposal.votes);
             let created_date = format_ns_timestamp_u64(proposal.submission_time.0);
             let status: String = get_status_display(
@@ -1087,6 +1014,8 @@ impl ProposalCsvFormatterAsync<StakeDelegationInfo> for StakeDelegationProposalF
                 "Pending",
             );
             let created_by = proposal.proposer.clone();
+            let token = "NEAR".to_string();
+
             vec![
                 proposal.id.to_string(),
                 created_date,
@@ -1095,7 +1024,7 @@ impl ProposalCsvFormatterAsync<StakeDelegationInfo> for StakeDelegationProposalF
                 proposal_type.to_string(),
                 parsed_amount,
                 token,
-                validator_account,
+                info.validator.clone(),
                 created_by,
                 notes,
                 formatted_votes.approved.join(", "),
@@ -1214,7 +1143,11 @@ pub struct LockupInfo;
 pub struct AssetExchangeInfo;
 
 #[derive(Debug, Clone)]
-pub struct StakeDelegationInfo;
+pub struct StakeDelegationInfo {
+    pub amount: String,
+    pub proposal_type: String,
+    pub validator: String,
+}
 
 impl ProposalType for PaymentInfo {
     fn from_proposal(proposal: &Proposal) -> Option<Self> {
@@ -1495,7 +1428,7 @@ impl ProposalType for AssetExchangeInfo {
 
 impl ProposalType for StakeDelegationInfo {
     fn from_proposal(proposal: &Proposal) -> Option<Self> {
-        if let Some(_function_call) = proposal.kind.get("FunctionCall") {
+        if let Some(function_call) = proposal.kind.get("FunctionCall") {
             let proposal_action = extract_from_description(&proposal.description, "proposalaction");
             let is_stake_request =
                 extract_from_description(&proposal.description, "isStakeRequest").is_some()
@@ -1505,7 +1438,86 @@ impl ProposalType for StakeDelegationInfo {
                     };
 
             if is_stake_request {
-                return Some(StakeDelegationInfo);
+                let receiver_account = function_call
+                    .get("receiver_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let actions = if let Some(actions) =
+                    function_call.get("actions").and_then(|v| v.as_array())
+                {
+                    actions
+                } else {
+                    return None;
+                };
+
+                let action = if let Some(action) = actions.get(0) {
+                    action
+                } else {
+                    return None;
+                };
+                let method_name = action
+                    .get("method_name")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("");
+
+                let mut validator_account = receiver_account.clone();
+                let mut amount = action
+                    .get("deposit")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Extract amount from args for unstake/withdraw
+                let args_b64 = action.get("args").and_then(|a| a.as_str()).unwrap_or("");
+                if let Ok(decoded_bytes) =
+                    base64::engine::general_purpose::STANDARD.decode(args_b64)
+                {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decoded_bytes) {
+                        if let Some(val) = json.get("amount").and_then(|v| v.as_str()) {
+                            amount = val.to_string();
+                        }
+                        // Only extract validator from args if it's a select_staking_pool call
+                        if method_name == "select_staking_pool" {
+                            if let Some(val) =
+                                json.get("staking_pool_account_id").and_then(|v| v.as_str())
+                            {
+                                validator_account = val.to_string();
+                            }
+                        }
+                    }
+                }
+
+                // Handle withdraw amount from description
+                if method_name == "withdraw_all" || method_name == "withdraw_all_from_staking_pool"
+                {
+                    if let Some(withdraw_amount) =
+                        extract_from_description(&proposal.description, "amount")
+                    {
+                        amount = withdraw_amount;
+                    }
+                }
+
+                let proposal_type = if method_name == "unstake" {
+                    "unstake"
+                } else if method_name == "deposit_and_stake" {
+                    "stake"
+                } else if method_name == "withdraw_all"
+                    || method_name == "withdraw_all_from_staking_pool"
+                {
+                    "withdraw"
+                } else if method_name == "select_staking_pool" {
+                    "whitelist"
+                } else {
+                    "unknown"
+                };
+
+                return Some(StakeDelegationInfo {
+                    amount,
+                    proposal_type: proposal_type.to_string(),
+                    validator: validator_account,
+                });
             }
         }
         None

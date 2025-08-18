@@ -80,6 +80,24 @@ Retrieves a list of proposals for a specific DAO with optional filtering and sor
 - `amount_equal` - Filter by exact payment amount (human-readable format)
   - Example: `amount_equal=5.25` (5.25 NEAR)
 
+**Stake Delegation-Specific Filters (only apply when category=stake-delegation):**
+
+- `stake_type` - Filter by stake delegation type (comma-separated values)
+  - Values: `stake`, `unstake`, `withdraw`, `whitelist`
+  - Example: `stake_type=stake,unstake`
+- `validators` - Filter by validator(s) (comma-separated, OR logic)
+  - Example: `validators=astro-stakers.poolv1.near,figment.poolv1.near`
+  - Note: For lockup account proposals, validator information is automatically resolved via RPC calls
+- `stake_amount_min` - Filter by minimum stake amount in NEAR (human-readable format)
+  - Note: Automatically converts NEAR to yocto NEAR for comparison
+  - Example: `stake_amount_min=100` (100 NEAR)
+- `stake_amount_max` - Filter by maximum stake amount in NEAR (human-readable format)
+  - Note: Automatically converts NEAR to yocto NEAR for comparison
+  - Example: `stake_amount_max=1000` (1000 NEAR)
+- `stake_amount_equal` - Filter by exact stake amount in NEAR (human-readable format)
+  - Note: Automatically converts NEAR to yocto NEAR for comparison
+  - Example: `stake_amount_equal=500` (500 NEAR)
+
 **Date Filters:**
 
 - `created_date_from` - Filter proposals created from this date (inclusive)
@@ -166,6 +184,14 @@ GET /proposals/<dao_id>/requested-tokens
 
 Retrieves a list of all unique tokens requested in payment proposals for a DAO.
 
+### Get DAO Validators
+
+```
+GET /proposals/<dao_id>/validators
+```
+
+Retrieves a list of all unique validators from stake delegation proposals for a DAO.
+
 ## Caching
 
 All responses are cached for 5 seconds to improve performance and reduce load on the RPC client. The API fetches the latest data from the cache and applies filters as needed.
@@ -250,6 +276,36 @@ curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?c
 curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=payments&amount_equal=5.25"
 ```
 
+### Get Stake Delegation Proposals
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation"
+```
+
+### Get Stake Delegation Proposals by Type
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&stake_type=stake,unstake"
+```
+
+### Get Stake Delegation Proposals by Validator
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&validators=astro-stakers.poolv1.near"
+```
+
+### Get Stake Delegation Proposals with Amount Range
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&stake_amount_min=100&stake_amount_max=1000"
+```
+
+### Get Stake Delegation Proposals with Exact Amount
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&stake_amount_equal=500"
+```
+
 ### Get Proposals by Date Range
 
 ```bash
@@ -298,6 +354,12 @@ curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near/p
 curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near/requested-tokens"
 ```
 
+### Get DAO Validators
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near/validators"
+```
+
 ## Response Format Examples
 
 ### Proposals Response (JSON)
@@ -334,6 +396,15 @@ curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near/r
 ```json
 {
   "requested_tokens": ["near", "usdt.tether-token.near"],
+  "total": 2
+}
+```
+
+### Validators Response (JSON)
+
+```json
+{
+  "validators": ["astro-stakers.poolv1.near", "figment.poolv1.near"],
   "total": 2
 }
 ```
