@@ -54,6 +54,10 @@ pub struct ProposalFilters {
     pub created_date_from: Option<String>,
     pub created_date_to: Option<String>,
 
+    pub amount_min: Option<String>,
+    pub amount_max: Option<String>,
+    pub amount_equal: Option<String>,
+
     pub proposers: Option<String>,     // comma-separated accounts
     pub proposers_not: Option<String>, // comma-separated accounts
 
@@ -65,15 +69,12 @@ pub struct ProposalFilters {
     pub recipients_not: Option<String>, // comma-separated accounts
     pub tokens: Option<String>,         // comma-separated ft token ids
     pub tokens_not: Option<String>,     // comma-separated ft token ids
-    pub amount_min: Option<String>,
-    pub amount_max: Option<String>,
-    pub amount_equal: Option<String>,
+
     // Stake delegation specific filters
-    pub stake_amount_min: Option<String>,
-    pub stake_amount_max: Option<String>,
-    pub stake_amount_equal: Option<String>,
-    pub stake_type: Option<String>, // comma-separated values like "stake,unstake,withdraw,whitelist"
-    pub validators: Option<String>, // comma-separated validator accounts
+    pub stake_type: Option<String>, // comma-separated values like "stake,unstake,withdraw"
+    pub stake_type_not: Option<String>, // comma-separated values to exclude like "stake,unstake,withdraw"
+    pub validators: Option<String>,     // comma-separated validator accounts
+    pub validators_not: Option<String>, // comma-separated validator accounts to exclude
     // Pagination
     pub page: Option<usize>,
     pub page_size: Option<usize>,
@@ -130,7 +131,9 @@ impl ProposalFilters {
         let tokens_not_set = to_str_hashset(&self.tokens_not);
         let proposal_types_set = to_str_hashset(&self.proposal_types);
         let stake_type_set = to_str_hashset(&self.stake_type);
+        let stake_type_not_set = to_str_hashset(&self.stake_type_not);
         let validators_set = to_str_hashset(&self.validators);
+        let validators_not_set = to_str_hashset(&self.validators_not);
 
         let search_keywords: Option<Vec<String>> = self.search.as_ref().map(|s| {
             s.split(',')
@@ -286,6 +289,13 @@ impl ProposalFilters {
                                 }
                             }
 
+                            // Filter by stake type (exclusion)
+                            if let Some(ref stake_types_not) = stake_type_not_set {
+                                if stake_types_not.contains(stake_info.proposal_type.as_str()) {
+                                    continue;
+                                }
+                            }
+
                             // For lockup proposals, we need to get the validator from RPC if not already set
                             let mut validator_to_check = stake_info.validator.clone();
                             if stake_info.validator.contains("lockup.near")
@@ -308,14 +318,25 @@ impl ProposalFilters {
                                 }
                             }
 
+                            // Filter by validator (exclusion)
+                            if let Some(ref validators_not) = validators_not_set {
+                                if validators_not.contains(validator_to_check.as_str()) {
+                                    continue;
+                                }
+                            }
+
                             // Filter by amount (convert NEAR to yocto NEAR)
-                            if self.stake_amount_min.is_some()
-                                || self.stake_amount_max.is_some()
-                                || self.stake_amount_equal.is_some()
+                            let amount_min_ref = self.amount_min.as_ref();
+                            let amount_max_ref = self.amount_max.as_ref();
+                            let amount_equal_ref = self.amount_equal.as_ref();
+
+                            if amount_min_ref.is_some()
+                                || amount_max_ref.is_some()
+                                || amount_equal_ref.is_some()
                             {
                                 let stake_amount = stake_info.amount.parse::<u128>().ok();
 
-                                if let Some(min_str) = &self.stake_amount_min {
+                                if let Some(min_str) = amount_min_ref {
                                     if let Some(min) = convert_to_smallest_unit(min_str, 24) {
                                         if let Some(amount) = stake_amount {
                                             if amount < min {
@@ -329,7 +350,7 @@ impl ProposalFilters {
                                     }
                                 }
 
-                                if let Some(max_str) = &self.stake_amount_max {
+                                if let Some(max_str) = amount_max_ref {
                                     if let Some(max) = convert_to_smallest_unit(max_str, 24) {
                                         // NEAR has 24 decimals
                                         if let Some(amount) = stake_amount {
@@ -344,9 +365,8 @@ impl ProposalFilters {
                                     }
                                 }
 
-                                if let Some(equal_str) = &self.stake_amount_equal {
+                                if let Some(equal_str) = amount_equal_ref {
                                     if let Some(equal) = convert_to_smallest_unit(equal_str, 24) {
-                                        // NEAR has 24 decimals
                                         if let Some(amount) = stake_amount {
                                             if amount != equal {
                                                 continue;

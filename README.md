@@ -85,18 +85,24 @@ Retrieves a list of proposals for a specific DAO with optional filtering and sor
 - `stake_type` - Filter by stake delegation type (comma-separated values)
   - Values: `stake`, `unstake`, `withdraw`, `whitelist`
   - Example: `stake_type=stake,unstake`
+- `stake_type_not` - Exclude by stake delegation type (comma-separated values)
+  - Values: `stake`, `unstake`, `withdraw`, `whitelist`
+  - Example: `stake_type_not=withdraw,whitelist`
 - `validators` - Filter by validator(s) (comma-separated, OR logic)
   - Example: `validators=astro-stakers.poolv1.near,figment.poolv1.near`
   - Note: For lockup account proposals, validator information is automatically resolved via RPC calls
-- `stake_amount_min` - Filter by minimum stake amount in NEAR (human-readable format)
+- `validators_not` - Exclude by validator(s) (comma-separated, NOT logic)
+  - Example: `validators_not=astro-stakers.poolv1.near,figment.poolv1.near`
+  - Note: For lockup account proposals, validator information is automatically resolved via RPC calls
+- `amount_min` - Filter by minimum stake amount in NEAR (human-readable format)
   - Note: Automatically converts NEAR to yocto NEAR for comparison
-  - Example: `stake_amount_min=100` (100 NEAR)
-- `stake_amount_max` - Filter by maximum stake amount in NEAR (human-readable format)
+  - Example: `amount_min=100` (100 NEAR)
+- `amount_max` - Filter by maximum stake amount in NEAR (human-readable format)
   - Note: Automatically converts NEAR to yocto NEAR for comparison
-  - Example: `stake_amount_max=1000` (1000 NEAR)
-- `stake_amount_equal` - Filter by exact stake amount in NEAR (human-readable format)
+  - Example: `amount_max=1000` (1000 NEAR)
+- `amount_equal` - Filter by exact stake amount in NEAR (human-readable format)
   - Note: Automatically converts NEAR to yocto NEAR for comparison
-  - Example: `stake_amount_equal=500` (500 NEAR)
+  - Example: `amount_equal=500` (500 NEAR)
 
 **Date Filters:**
 
@@ -288,22 +294,34 @@ curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?c
 curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&stake_type=stake,unstake"
 ```
 
+### Get Stake Delegation Proposals Excluding Types
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&stake_type_not=withdraw,whitelist"
+```
+
 ### Get Stake Delegation Proposals by Validator
 
 ```bash
 curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&validators=astro-stakers.poolv1.near"
 ```
 
+### Get Stake Delegation Proposals Excluding Validators
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&validators_not=astro-stakers.poolv1.near"
+```
+
 ### Get Stake Delegation Proposals with Amount Range
 
 ```bash
-curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&stake_amount_min=100&stake_amount_max=1000"
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&amount_min=100&amount_max=1000"
 ```
 
 ### Get Stake Delegation Proposals with Exact Amount
 
 ```bash
-curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&stake_amount_equal=500"
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?category=stake-delegation&amount_equal=500"
 ```
 
 ### Get Proposals by Date Range

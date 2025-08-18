@@ -1128,7 +1128,7 @@ async fn test_all_filters() {
         &client,
         "stake delegation amount filter",
         &format!(
-            "/proposals/{}?category=stake-delegation&stake_amount_min=1",
+            "/proposals/{}?category=stake-delegation&amount_min=1",
             TEST_DAO_ID
         ),
         |proposals| {
@@ -1183,7 +1183,7 @@ async fn test_all_filters() {
         &client,
         "combined stake delegation filters",
         &format!(
-            "/proposals/{}?category=stake-delegation&stake_type=stake&stake_amount_min=0.1&validators=astro-stakers.poolv1.near",
+            "/proposals/{}?category=stake-delegation&stake_type=stake&amount_min=0.1&validators=astro-stakers.poolv1.near",
             TEST_DAO_ID
         ),
         |proposals| {
@@ -1204,7 +1204,7 @@ async fn test_all_filters() {
         &client,
         "stake delegation amount range filter",
         &format!(
-            "/proposals/{}?category=stake-delegation&stake_amount_min=0.5&stake_amount_max=2.0",
+            "/proposals/{}?category=stake-delegation&amount_min=0.5&amount_max=2.0",
             TEST_DAO_ID
         ),
         |proposals| {
