@@ -88,6 +88,12 @@ pub struct RequestedTokensResponse {
     pub total: usize,
 }
 
+#[derive(Serialize)]
+pub struct ValidatorsResponse {
+    pub validators: Vec<String>,
+    pub total: usize,
+}
+
 #[get("/proposals/<dao_id>?<filters..>")]
 pub async fn get_proposals(
     dao_id: &str,
@@ -272,6 +278,53 @@ pub async fn get_dao_requested_tokens(
 
     Ok(Json(RequestedTokensResponse {
         requested_tokens: request_tokens_vec,
+        total,
+    }))
+}
+
+#[get("/proposals/<dao_id>/validators")]
+pub async fn get_dao_validators(
+    dao_id: &str,
+    store: &State<ProposalStore>,
+) -> Result<Json<ValidatorsResponse>, Status> {
+    let dao_id: AccountId = dao_id.parse().map_err(|_| Status::BadRequest)?;
+    let client = rpc_client::get_rpc_client();
+
+    let cached = get_cached_data(&dao_id, &client, &store).await?;
+
+    // Extract unique validators from stake delegation proposals only
+    let mut validators: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let staking_pool_cache = cache::StakingPoolCache::new();
+
+    for proposal in &cached.proposals {
+        // Check if this is a stake delegation proposal
+        if let Some(stake_info) = scraper::StakeDelegationInfo::from_proposal(proposal) {
+            // For lockup accounts, we need to resolve the validator via RPC
+            if stake_info.validator.contains(".lockup.near") {
+                // This is a lockup account, resolve the validator
+                if let Some(validator) = staking_pool_cache
+                    .get_staking_pool_account_id(&client, &stake_info.validator)
+                    .await
+                {
+                    validators.insert(validator);
+                } else {
+                    // If RPC call fails, still include the lockup account as fallback
+                    validators.insert(stake_info.validator);
+                }
+            } else {
+                // Direct validator account
+                validators.insert(stake_info.validator);
+            }
+        }
+    }
+
+    let mut validators_vec: Vec<String> = validators.into_iter().collect();
+    validators_vec.sort_unstable(); // Sort alphabetically for consistent ordering
+
+    let total = validators_vec.len();
+
+    Ok(Json(ValidatorsResponse {
+        validators: validators_vec,
         total,
     }))
 }
@@ -502,6 +555,7 @@ pub fn rocket() -> rocket::Rocket<rocket::Build> {
                 get_dao_approvers,
                 get_dao_recipients,
                 get_dao_requested_tokens,
+                get_dao_validators,
                 csv_proposals
             ],
         )
@@ -509,7 +563,13 @@ pub fn rocket() -> rocket::Rocket<rocket::Build> {
         .attach(cors)
         .configure(
             rocket::Config::figment()
-                .merge(("port", 5001))
+                .merge((
+                    "port",
+                    std::env::var("PORT")
+                        .unwrap_or("5001".to_string())
+                        .parse::<u16>()
+                        .unwrap_or(5001),
+                ))
                 .merge(("address", "0.0.0.0")),
         )
 }

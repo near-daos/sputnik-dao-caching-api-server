@@ -1,4 +1,4 @@
-use crate::cache::{FtMetadataCache, get_ft_metadata_cache};
+use crate::cache::{FtMetadataCache, StakingPoolCache, get_ft_metadata_cache};
 use crate::scraper::{
     AssetExchangeInfo, LockupInfo, PaymentInfo, Policy, Proposal, ProposalType,
     StakeDelegationInfo, get_status_display,
@@ -54,6 +54,10 @@ pub struct ProposalFilters {
     pub created_date_from: Option<String>,
     pub created_date_to: Option<String>,
 
+    pub amount_min: Option<String>,
+    pub amount_max: Option<String>,
+    pub amount_equal: Option<String>,
+
     pub proposers: Option<String>,     // comma-separated accounts
     pub proposers_not: Option<String>, // comma-separated accounts
 
@@ -65,9 +69,12 @@ pub struct ProposalFilters {
     pub recipients_not: Option<String>, // comma-separated accounts
     pub tokens: Option<String>,         // comma-separated ft token ids
     pub tokens_not: Option<String>,     // comma-separated ft token ids
-    pub amount_min: Option<String>,
-    pub amount_max: Option<String>,
-    pub amount_equal: Option<String>,
+
+    // Stake delegation specific filters
+    pub stake_type: Option<String>, // comma-separated values like "stake,unstake,withdraw"
+    pub stake_type_not: Option<String>, // comma-separated values to exclude like "stake,unstake,withdraw"
+    pub validators: Option<String>,     // comma-separated validator accounts
+    pub validators_not: Option<String>, // comma-separated validator accounts to exclude
     // Pagination
     pub page: Option<usize>,
     pub page_size: Option<usize>,
@@ -110,6 +117,7 @@ impl ProposalFilters {
         ft_metadata_cache: &FtMetadataCache,
     ) -> Result<Vec<Proposal>, Box<dyn std::error::Error>> {
         let client = Arc::new(JsonRpcClient::connect("https://rpc.mainnet.near.org"));
+        let staking_pool_cache = StakingPoolCache::new();
 
         let statuses_set = to_str_hashset(&self.statuses);
         let proposers_set = to_str_hashset(&self.proposers);
@@ -122,6 +130,10 @@ impl ProposalFilters {
         let tokens_set = to_str_hashset(&self.tokens);
         let tokens_not_set = to_str_hashset(&self.tokens_not);
         let proposal_types_set = to_str_hashset(&self.proposal_types);
+        let stake_type_set = to_str_hashset(&self.stake_type);
+        let stake_type_not_set = to_str_hashset(&self.stake_type_not);
+        let validators_set = to_str_hashset(&self.validators);
+        let validators_not_set = to_str_hashset(&self.validators_not);
 
         let search_keywords: Option<Vec<String>> = self.search.as_ref().map(|s| {
             s.split(',')
@@ -142,34 +154,7 @@ impl ProposalFilters {
         let mut filtered_proposals = Vec::with_capacity(proposals.len());
 
         for proposal in proposals {
-            // Cache expensive computations
             let submission_time = proposal.submission_time.0;
-            let description_lower = if search_keywords.is_some() {
-                proposal.description.to_lowercase()
-            } else {
-                String::new() // Won't be used
-            };
-            let proposal_kind_keys = if proposal_types_set.is_some() {
-                proposal
-                    .kind
-                    .as_object()
-                    .map(|obj| obj.keys().map(|k| k.as_str()).collect::<Vec<&str>>())
-                    .unwrap_or_default()
-            } else {
-                Vec::new() // Won't be used
-            };
-
-            if let Some(ref statuses) = statuses_set {
-                let computed_status = get_status_display(
-                    &proposal.status,
-                    submission_time,
-                    policy.proposal_period.0,
-                    "InProgress",
-                );
-                if !statuses.contains(computed_status.as_str()) {
-                    continue;
-                }
-            }
 
             if let Some(ref proposers) = proposers_set {
                 if !proposers.contains(proposal.proposer.as_str()) {
@@ -179,32 +164,6 @@ impl ProposalFilters {
 
             if let Some(ref proposers_not) = proposers_not_set {
                 if proposers_not.contains(proposal.proposer.as_str()) {
-                    continue;
-                }
-            }
-
-            if let Some(ref keywords) = search_keywords {
-                if !keywords.iter().any(|kw| description_lower.contains(kw)) {
-                    continue;
-                }
-            }
-
-            if let Some(ref proposal_types) = proposal_types_set {
-                if !proposal_types
-                    .iter()
-                    .any(|proposal_type| proposal_kind_keys.contains(proposal_type))
-                {
-                    continue;
-                }
-            }
-
-            if let Some(from_ts) = from_timestamp {
-                if submission_time < from_ts {
-                    continue;
-                }
-            }
-            if let Some(to_ts) = to_timestamp {
-                if submission_time > to_ts {
                     continue;
                 }
             }
@@ -226,6 +185,62 @@ impl ProposalFilters {
                     continue;
                 }
             }
+
+            if let Some(from_ts) = from_timestamp {
+                if submission_time < from_ts {
+                    continue;
+                }
+            }
+            if let Some(to_ts) = to_timestamp {
+                if submission_time > to_ts {
+                    continue;
+                }
+            }
+
+            if let Some(ref statuses) = statuses_set {
+                let computed_status = get_status_display(
+                    &proposal.status,
+                    submission_time,
+                    policy.proposal_period.0,
+                    "InProgress",
+                );
+                if !statuses.contains(computed_status.as_str()) {
+                    continue;
+                }
+            }
+
+            if let Some(ref keywords) = search_keywords {
+                let proposal_id_str = proposal.id.to_string();
+                let description_lower = proposal.description.to_lowercase();
+                let proposal_id_lower = proposal_id_str.to_lowercase();
+
+                if !keywords.iter().any(|kw| {
+                    // If keyword is only numbers, search for exact proposal ID match
+                    if kw.chars().all(|c| c.is_ascii_digit()) {
+                        proposal_id_str == *kw
+                    } else {
+                        description_lower.contains(kw) || proposal_id_lower.contains(kw)
+                    }
+                }) {
+                    continue;
+                }
+            }
+
+            if let Some(ref proposal_types) = proposal_types_set {
+                let proposal_kind_keys: Vec<&str> = if let Some(obj) = proposal.kind.as_object() {
+                    obj.keys().map(|k| k.as_str()).collect()
+                } else {
+                    Vec::new()
+                };
+
+                if !proposal_types
+                    .iter()
+                    .any(|proposal_type| proposal_kind_keys.contains(proposal_type))
+                {
+                    continue;
+                }
+            }
+
             if let Some(ref voter_votes) = voter_votes_set {
                 let mut all_voter_checks_passed = true;
                 for voter_vote in voter_votes {
@@ -266,8 +281,106 @@ impl ProposalFilters {
                         }
                     }
                     categories::STAKE_DELEGATION => {
-                        if StakeDelegationInfo::from_proposal(&proposal).is_none() {
-                            continue;
+                        if let Some(stake_info) = StakeDelegationInfo::from_proposal(&proposal) {
+                            // Filter by stake type
+                            if let Some(ref stake_types) = stake_type_set {
+                                if !stake_types.contains(stake_info.proposal_type.as_str()) {
+                                    continue;
+                                }
+                            }
+
+                            // Filter by stake type (exclusion)
+                            if let Some(ref stake_types_not) = stake_type_not_set {
+                                if stake_types_not.contains(stake_info.proposal_type.as_str()) {
+                                    continue;
+                                }
+                            }
+
+                            // For lockup proposals, we need to get the validator from RPC if not already set
+                            let mut validator_to_check = stake_info.validator.clone();
+                            if stake_info.validator.contains("lockup.near")
+                                && stake_info.proposal_type != "whitelist"
+                            {
+                                // This is a lockup proposal that's not a select_staking_pool call
+                                // We need to get the validator from the lockup contract
+                                if let Some(pool_id) = staking_pool_cache
+                                    .get_staking_pool_account_id(&client, &stake_info.validator)
+                                    .await
+                                {
+                                    validator_to_check = pool_id;
+                                }
+                            }
+
+                            // Filter by validator
+                            if let Some(ref validators) = validators_set {
+                                if !validators.contains(validator_to_check.as_str()) {
+                                    continue;
+                                }
+                            }
+
+                            // Filter by validator (exclusion)
+                            if let Some(ref validators_not) = validators_not_set {
+                                if validators_not.contains(validator_to_check.as_str()) {
+                                    continue;
+                                }
+                            }
+
+                            // Filter by amount (convert NEAR to yocto NEAR)
+                            let amount_min_ref = self.amount_min.as_ref();
+                            let amount_max_ref = self.amount_max.as_ref();
+                            let amount_equal_ref = self.amount_equal.as_ref();
+
+                            if amount_min_ref.is_some()
+                                || amount_max_ref.is_some()
+                                || amount_equal_ref.is_some()
+                            {
+                                let stake_amount = stake_info.amount.parse::<u128>().ok();
+
+                                if let Some(min_str) = amount_min_ref {
+                                    if let Some(min) = convert_to_smallest_unit(min_str, 24) {
+                                        if let Some(amount) = stake_amount {
+                                            if amount < min {
+                                                continue;
+                                            }
+                                        } else {
+                                            continue; // Invalid amount
+                                        }
+                                    } else {
+                                        continue; // Invalid amount_min input
+                                    }
+                                }
+
+                                if let Some(max_str) = amount_max_ref {
+                                    if let Some(max) = convert_to_smallest_unit(max_str, 24) {
+                                        // NEAR has 24 decimals
+                                        if let Some(amount) = stake_amount {
+                                            if amount > max {
+                                                continue;
+                                            }
+                                        } else {
+                                            continue; // Invalid amount
+                                        }
+                                    } else {
+                                        continue; // Invalid amount_max input
+                                    }
+                                }
+
+                                if let Some(equal_str) = amount_equal_ref {
+                                    if let Some(equal) = convert_to_smallest_unit(equal_str, 24) {
+                                        if let Some(amount) = stake_amount {
+                                            if amount != equal {
+                                                continue;
+                                            }
+                                        } else {
+                                            continue; // Invalid amount
+                                        }
+                                    } else {
+                                        continue; // Invalid amount_equal input
+                                    }
+                                }
+                            }
+                        } else {
+                            continue; // Not a stake delegation proposal
                         }
                     }
                     categories::PAYMENTS => {

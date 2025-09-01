@@ -1,0 +1,33 @@
+# fly.toml app configuration file generated for sputnik-indexer-divine-fog-3863 on 2025-04-24T18:54:50+02:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'sputnik-indexer'
+primary_region = 'ams'
+
+[build]
+
+[env]
+NEAR_RPC_URL = 'https://archival-rpc.mainnet.fastnear.com'
+PORT = '5001'
+ROCKET_ADDRESS = '0.0.0.0'
+ROCKET_PORT = '5001'
+
+[http_service]
+internal_port = 5001
+force_https = true
+auto_stop_machines = 'stop'
+auto_start_machines = true
+min_machines_running = 0
+processes = ['app']
+
+[[vm]]
+memory = '2gb'
+cpu_kind = 'shared'
+cpus = 2
+
+# Persistent volume configuration for cache storage
+[mounts]
+source = "sputnik_indexer_cache"
+destination = "/data"

@@ -65,7 +65,6 @@ fn extract_payment_info(proposal: &serde_json::Value) -> Option<PaymentInfo> {
                 if method_name == "ft_transfer" {
                     if let Some(args_b64) = action.get("args").and_then(|a| a.as_str()) {
                         if let Ok(decoded_bytes) = STANDARD.decode(args_b64) {
-                            let decoded_bytes = decoded_bytes;
                             if let Ok(json_args) =
                                 serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
                             {
@@ -87,6 +86,62 @@ fn extract_payment_info(proposal: &serde_json::Value) -> Option<PaymentInfo> {
                                     token,
                                     amount,
                                 });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for ft_withdraw method (Intents payments)
+        if receiver_id == "intents.near" {
+            for action in actions {
+                if let Some(method_name) = action.get("method_name").and_then(|m| m.as_str()) {
+                    if method_name == "ft_withdraw" {
+                        if let Some(args_b64) = action.get("args").and_then(|a| a.as_str()) {
+                            if let Ok(decoded_bytes) = STANDARD.decode(args_b64) {
+                                if let Ok(json_args) =
+                                    serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
+                                {
+                                    let token = json_args
+                                        .get("token")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let amount = json_args
+                                        .get("amount")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let receiver = if let Some(memo) =
+                                        json_args.get("memo").and_then(|v| v.as_str())
+                                    {
+                                        if memo.contains("WITHDRAW_TO:") {
+                                            memo.split("WITHDRAW_TO:")
+                                                .nth(1)
+                                                .unwrap_or("")
+                                                .to_string()
+                                        } else {
+                                            json_args
+                                                .get("receiver_id")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_string()
+                                        }
+                                    } else {
+                                        json_args
+                                            .get("receiver_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string()
+                                    };
+
+                                    return Some(PaymentInfo {
+                                        receiver,
+                                        token,
+                                        amount,
+                                    });
+                                }
                             }
                         }
                     }
@@ -332,6 +387,125 @@ fn verify_payment_tokens(proposals: &[serde_json::Value], expected_tokens: &[&st
             }
         } else {
             panic!("All proposals should be payment proposals");
+        }
+    }
+}
+
+// Helper struct to extract stake delegation data from a proposal
+#[derive(Debug)]
+struct StakeDelegationData {
+    proposal_type: String,
+    validator: String,
+    amount: u128,
+}
+
+// Helper function to extract stake delegation data from a proposal
+fn extract_stake_delegation_data(proposal: &serde_json::Value) -> Option<StakeDelegationData> {
+    let kind = proposal.get("kind")?;
+    let function_call = kind.get("FunctionCall")?;
+    let actions = function_call.get("actions")?.as_array()?;
+    let action = actions.get(0)?;
+
+    let method_name = action.get("method_name")?.as_str()?;
+    let receiver_id = function_call.get("receiver_id")?.as_str()?;
+
+    let proposal_type = match method_name {
+        "deposit_and_stake" => "stake",
+        "unstake" => "unstake",
+        "withdraw_all" | "withdraw_all_from_staking_pool" => "withdraw",
+        "select_staking_pool" => "whitelist",
+        _ => "unknown",
+    };
+
+    // Extract amount from deposit field (for stake) or args (for unstake/withdraw)
+    let mut amount = 0u128;
+
+    // Check deposit amount for stake proposals
+    if let Some(deposit_str) = action.get("deposit").and_then(|v| v.as_str()) {
+        if let Ok(deposit_amount) = deposit_str.parse::<u128>() {
+            amount = deposit_amount;
+        }
+    }
+
+    // Check args for unstake/withdraw amounts
+    if let Some(args_b64) = action.get("args").and_then(|a| a.as_str()) {
+        if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(args_b64) {
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&decoded_bytes) {
+                if let Some(amount_from_args) = json.get("amount").and_then(|v| v.as_str()) {
+                    if let Ok(args_amount) = amount_from_args.parse::<u128>() {
+                        amount = args_amount;
+                    }
+                }
+            }
+        }
+    }
+
+    Some(StakeDelegationData {
+        proposal_type: proposal_type.to_string(),
+        validator: receiver_id.to_string(),
+        amount,
+    })
+}
+
+// Helper function to verify stake delegation proposals have expected types
+fn verify_stake_delegation_types(proposals: &[serde_json::Value], expected_types: &[&str]) {
+    let expected_set: std::collections::HashSet<&str> = expected_types.iter().cloned().collect();
+    for proposal in proposals {
+        if let Some(data) = extract_stake_delegation_data(proposal) {
+            assert!(
+                expected_set.contains(data.proposal_type.as_str()),
+                "Proposal should have one of the expected stake types: {:?}, got: {}",
+                expected_types,
+                data.proposal_type
+            );
+        }
+    }
+}
+
+// Helper function to verify stake delegation proposals have expected validators
+fn verify_stake_delegation_validators(
+    proposals: &[serde_json::Value],
+    expected_validators: &[&str],
+) {
+    let expected_set: std::collections::HashSet<&str> =
+        expected_validators.iter().cloned().collect();
+    for proposal in proposals {
+        if let Some(data) = extract_stake_delegation_data(proposal) {
+            assert!(
+                expected_set.contains(data.validator.as_str()),
+                "Proposal should have one of the expected validators: {:?}, got: {}",
+                expected_validators,
+                data.validator
+            );
+        }
+    }
+}
+
+// Helper function to verify stake delegation proposals have amounts within range
+fn verify_stake_delegation_amounts(
+    proposals: &[serde_json::Value],
+    min_amount: Option<u128>,
+    max_amount: Option<u128>,
+) {
+    for proposal in proposals {
+        if let Some(data) = extract_stake_delegation_data(proposal) {
+            if let Some(min) = min_amount {
+                assert!(
+                    data.amount >= min,
+                    "Proposal amount {} should be >= minimum {}",
+                    data.amount,
+                    min
+                );
+            }
+
+            if let Some(max) = max_amount {
+                assert!(
+                    data.amount <= max,
+                    "Proposal amount {} should be <= maximum {}",
+                    data.amount,
+                    max
+                );
+            }
         }
     }
 }
@@ -944,6 +1118,105 @@ async fn test_all_filters() {
             verify_proposals_returned(
                 proposals,
                 "Invalid sort_by should return proposals without sorting",
+            );
+        },
+    )
+    .await;
+
+    // Test 37: Stake delegation amount filter
+    run_filter_test(
+        &client,
+        "stake delegation amount filter",
+        &format!(
+            "/proposals/{}?category=stake-delegation&amount_min=1",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            verify_proposals_returned(
+                proposals,
+                "Stake delegation amount filter should return proposals",
+            );
+            // Convert 1 NEAR to yocto NEAR (1 * 10^24)
+            verify_stake_delegation_amounts(proposals, Some(1000000000000000000000000), None);
+        },
+    )
+    .await;
+
+    // Test 38: Stake delegation type filter
+    run_filter_test(
+        &client,
+        "stake delegation type filter",
+        &format!(
+            "/proposals/{}?category=stake-delegation&stake_type=stake,unstake",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            verify_proposals_returned(
+                proposals,
+                "Stake delegation type filter should return proposals",
+            );
+            verify_stake_delegation_types(proposals, &["stake", "unstake"]);
+        },
+    )
+    .await;
+
+    // Test 39: Stake delegation validator filter
+    run_filter_test(
+        &client,
+        "stake delegation validator filter",
+        &format!(
+            "/proposals/{}?category=stake-delegation&validators=astro-stakers.poolv1.near",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            verify_proposals_returned(
+                proposals,
+                "Stake delegation validator filter should return proposals",
+            );
+            verify_stake_delegation_validators(proposals, &["astro-stakers.poolv1.near"]);
+        },
+    )
+    .await;
+
+    // Test 40: Combined stake delegation filters
+    run_filter_test(
+        &client,
+        "combined stake delegation filters",
+        &format!(
+            "/proposals/{}?category=stake-delegation&stake_type=stake&amount_min=0.1&validators=astro-stakers.poolv1.near",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            verify_proposals_returned(
+                proposals,
+                "Combined stake delegation filters should return proposals",
+            );
+            // Convert 0.1 NEAR to yocto NEAR (0.1 * 10^24)
+            verify_stake_delegation_amounts(proposals, Some(100000000000000000000000), None);
+            verify_stake_delegation_types(proposals, &["stake"]);
+            verify_stake_delegation_validators(proposals, &["astro-stakers.poolv1.near"]);
+        },
+    )
+    .await;
+
+    // Test 41: Stake delegation amount range filter
+    run_filter_test(
+        &client,
+        "stake delegation amount range filter",
+        &format!(
+            "/proposals/{}?category=stake-delegation&amount_min=0.5&amount_max=2.0",
+            TEST_DAO_ID
+        ),
+        |proposals| {
+            verify_proposals_returned(
+                proposals,
+                "Stake delegation amount range filter should return proposals",
+            );
+            // Convert 0.5 NEAR to yocto NEAR (0.5 * 10^24) and 2.0 NEAR to yocto NEAR (2.0 * 10^24)
+            verify_stake_delegation_amounts(
+                proposals,
+                Some(500000000000000000000000),
+                Some(2000000000000000000000000),
             );
         },
     )
