@@ -30,6 +30,29 @@ fn parse_date_to_timestamp(date_str: &str) -> Result<u64, Box<dyn std::error::Er
     Ok(utc_datetime.timestamp_nanos_opt().unwrap_or(0) as u64)
 }
 
+// Helper function to determine the source of a proposal
+fn get_proposal_source(proposal: &Proposal) -> &'static str {
+    // Check if it's a NEAR Intents proposal
+    if let Some(function_call) = proposal.kind.get("FunctionCall") {
+        let receiver_id = function_call
+            .get("receiver_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if receiver_id == "intents.near" {
+            return "intents";
+        }
+
+        // Check if it's a lockup proposal (any interaction with lockup.near contracts)
+        if receiver_id.contains("lockup.near") {
+            return "lockup";
+        }
+    }
+
+    // Default to sputnikdao for all other proposals
+    "sputnikdao"
+}
+
 #[derive(Deserialize, FromFormField, Clone)]
 pub enum SortBy {
     CreationTime,
@@ -64,6 +87,11 @@ pub struct ProposalFilters {
     pub approvers: Option<String>,     // comma-separated accounts
     pub approvers_not: Option<String>, // array of accounts
     pub voter_votes: Option<String>, // format: "account:vote,account:vote" where vote is "approved" or "rejected"
+
+    // Source filter
+    pub source: Option<String>, // comma-separated values like "sputnikdao,intents,lockup"
+    pub source_not: Option<String>, // comma-separated values to exclude like "sputnikdao,intents,lockup"
+
     // Payment-specific filters
     pub recipients: Option<String>,     // comma-separated accounts
     pub recipients_not: Option<String>, // comma-separated accounts
@@ -134,6 +162,8 @@ impl ProposalFilters {
         let stake_type_not_set = to_str_hashset(&self.stake_type_not);
         let validators_set = to_str_hashset(&self.validators);
         let validators_not_set = to_str_hashset(&self.validators_not);
+        let source_set = to_str_hashset(&self.source);
+        let source_not_set = to_str_hashset(&self.source_not);
 
         let search_keywords: Option<Vec<String>> = self.search.as_ref().map(|s| {
             s.split(',')
@@ -264,6 +294,22 @@ impl ProposalFilters {
                 }
 
                 if !all_voter_checks_passed {
+                    continue;
+                }
+            }
+
+            // Filter by source
+            if let Some(ref sources) = source_set {
+                let proposal_source = get_proposal_source(&proposal);
+                if !sources.contains(proposal_source) {
+                    continue;
+                }
+            }
+
+            // Filter by source (exclusion)
+            if let Some(ref sources_not) = source_not_set {
+                let proposal_source = get_proposal_source(&proposal);
+                if sources_not.contains(proposal_source) {
                     continue;
                 }
             }
