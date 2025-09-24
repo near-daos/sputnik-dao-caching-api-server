@@ -55,6 +55,18 @@ Retrieves a list of proposals for a specific DAO with optional filtering and sor
   - Vote values: `approved` (Approve vote), `rejected` (Reject/Remove vote)
   - Example: `voter_votes=alice.near:approved,bob.near:rejected`
 
+**Source Filters:**
+
+- `source` - Filter by proposal source (comma-separated, OR logic)
+  - Values: `sputnikdao`, `intents`, `lockup`
+  - `sputnikdao`: Regular SputnikDAO proposals
+  - `intents`: Proposals calling the intents.near contract
+  - `lockup`: Proposals involving lockup.near contracts
+  - Example: `source=sputnikdao,intents`
+- `source_not` - Exclude by proposal source (comma-separated, NOT logic)
+  - Values: `sputnikdao`, `intents`, `lockup`
+  - Example: `source_not=lockup`
+
 **Category Filters:**
 
 - `category` - Filter by proposal category
@@ -219,6 +231,7 @@ The filtering system supports complex combinations:
 - **Approvers**: `approvers` (OR), `approvers_not` (NOT)
 - **Recipients**: `recipients` (OR), `recipients_not` (NOT)
 - **Tokens**: `tokens` (OR), `tokens_not` (NOT)
+- **Sources**: `source` (OR), `source_not` (NOT)
 - **Proposal Types**: `proposal_types` (OR logic)
 
 ### Range Filters
@@ -340,6 +353,24 @@ curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?p
 
 ```bash
 curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?voter_votes=alice.near:approved,bob.near:rejected"
+```
+
+### Get Proposals by Source
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?source=sputnikdao"
+```
+
+### Get Proposals from Multiple Sources
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?source=intents,lockup"
+```
+
+### Get Proposals Excluding Specific Sources
+
+```bash
+curl -X GET "http://localhost:5001/proposals/testing-astradao.sputnik-dao.near?source_not=lockup"
 ```
 
 ### Get Proposals with Multiple Filters
