@@ -28,6 +28,8 @@ Retrieves a list of proposals for a specific DAO with optional filtering and sor
 
 - `search` - Filter proposals containing this keyword in description (case-insensitive)
   - Example: `search=payment`
+- `search_not` - Exclude proposals containing these keywords in description (case-insensitive, comma-separated)
+  - Example: `search_not=spam,test`
 
 **Proposal Type Filters:**
 
@@ -227,6 +229,7 @@ The filtering system supports complex combinations:
 
 ### Multi-Select Filters (OR Logic for Inclusion, NOT Logic for Exclusion)
 
+- **Search**: `search` (OR), `search_not` (NOT)
 - **Proposers**: `proposers` (OR), `proposers_not` (NOT)
 - **Approvers**: `approvers` (OR), `approvers_not` (NOT)
 - **Recipients**: `recipients` (OR), `recipients_not` (NOT)

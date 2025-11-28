@@ -70,6 +70,7 @@ pub mod categories {
 pub struct ProposalFilters {
     pub statuses: Option<String>, // comma-separated values like "Approved,Rejected"
     pub search: Option<String>,   // search the description
+    pub search_not: Option<String>, // exclude proposals containing these keywords
     pub proposal_types: Option<String>, // comma-separated values like 'FunctionCall,Transfer'
     pub sort_by: Option<SortBy>,
     pub sort_direction: Option<String>, // "asc" or "desc"
@@ -172,6 +173,13 @@ impl ProposalFilters {
                 .collect()
         });
 
+        let search_not_keywords: Option<Vec<String>> = self.search_not.as_ref().map(|s| {
+            s.split(',')
+                .map(|k| k.trim().to_lowercase())
+                .filter(|k| !k.is_empty())
+                .collect()
+        });
+
         let from_timestamp = self
             .created_date_from
             .as_ref()
@@ -245,6 +253,23 @@ impl ProposalFilters {
                 let proposal_id_lower = proposal_id_str.to_lowercase();
 
                 if !keywords.iter().any(|kw| {
+                    // If keyword is only numbers, search for exact proposal ID match
+                    if kw.chars().all(|c| c.is_ascii_digit()) {
+                        proposal_id_str == *kw
+                    } else {
+                        description_lower.contains(kw) || proposal_id_lower.contains(kw)
+                    }
+                }) {
+                    continue;
+                }
+            }
+
+            if let Some(ref keywords_not) = search_not_keywords {
+                let proposal_id_str = proposal.id.to_string();
+                let description_lower = proposal.description.to_lowercase();
+                let proposal_id_lower = proposal_id_str.to_lowercase();
+
+                if keywords_not.iter().any(|kw| {
                     // If keyword is only numbers, search for exact proposal ID match
                     if kw.chars().all(|c| c.is_ascii_digit()) {
                         proposal_id_str == *kw
