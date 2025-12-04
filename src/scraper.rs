@@ -1149,6 +1149,8 @@ pub struct StakeDelegationInfo {
     pub validator: String,
 }
 
+const BULK_PAYMENT_CONTRACT: &str = "bulk-payment.near";
+
 impl ProposalType for PaymentInfo {
     fn from_proposal(proposal: &Proposal) -> Option<Self> {
         if proposal.kind.get("Transfer").is_none() && proposal.kind.get("FunctionCall").is_none() {
@@ -1189,14 +1191,59 @@ impl ProposalType for PaymentInfo {
                 .and_then(|a| a.as_array())
                 .map(|a| a.as_slice())
                 .unwrap_or(&[]);
+
+            let method_name = actions
+                .get(0)
+                .and_then(|a| a.get("method_name"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("");
+
+            // Bulk Payment Contract
+            if receiver_id == BULK_PAYMENT_CONTRACT {
+                // approve_list to bulk payment contract (NEAR)
+                if method_name == "approve_list" {
+                    if let Some(bulk_info) = parse_bulk_payment_description(&proposal.description) {
+                        return Some(PaymentInfo {
+                            receiver: BULK_PAYMENT_CONTRACT.to_string(),
+                            token: bulk_info.contract,
+                            amount: bulk_info.amount,
+                            is_lockup: false,
+                        });
+                    }
+                }
+
+                // ft_transfer_call for FT bulk payments
+                if method_name == "ft_transfer_call" {
+                    if let Some(bulk_info) = parse_bulk_payment_description(&proposal.description) {
+                        return Some(PaymentInfo {
+                            receiver: BULK_PAYMENT_CONTRACT.to_string(),
+                            token: bulk_info.contract,
+                            amount: bulk_info.amount,
+                            is_lockup: false,
+                        });
+                    }
+                }
+
+                // buy_storage to bulk payment contract
+                if method_name == "buy_storage" {
+                    let deposit = actions
+                        .get(0)
+                        .and_then(|a| a.get("deposit"))
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("0")
+                        .to_string();
+
+                    return Some(PaymentInfo {
+                        receiver: BULK_PAYMENT_CONTRACT.to_string(),
+                        token: String::new(), // NEAR
+                        amount: deposit,
+                        is_lockup: false,
+                    });
+                }
+            }
+
             // Intents payment
-            if receiver_id == "intents.near"
-                && actions
-                    .get(0)
-                    .and_then(|a| a.get("method_name"))
-                    .and_then(|m| m.as_str())
-                    == Some("ft_withdraw")
-            {
+            if receiver_id == "intents.near" && method_name == "ft_withdraw" {
                 if let Some(args_b64) = actions
                     .get(0)
                     .and_then(|a| a.get("args"))
@@ -1247,12 +1294,8 @@ impl ProposalType for PaymentInfo {
                     }
                 }
             }
+
             // Lockup contract transfer
-            let method_name = actions
-                .get(0)
-                .and_then(|a| a.get("method_name"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("");
             if method_name == "transfer" && receiver_id.contains("lockup.near") {
                 if let Some(args_b64) = actions
                     .get(0)
@@ -1290,6 +1333,7 @@ impl ProposalType for PaymentInfo {
                     }
                 }
             }
+
             // NEARN requests: storage_deposit + ft_transfer
             if actions.len() >= 2
                 && actions
@@ -1335,13 +1379,9 @@ impl ProposalType for PaymentInfo {
                     }
                 }
             }
+
             // Standard ft_transfer
-            if actions
-                .get(0)
-                .and_then(|a| a.get("method_name"))
-                .and_then(|m| m.as_str())
-                == Some("ft_transfer")
-            {
+            if method_name == "ft_transfer" {
                 let token = receiver_id.to_string();
                 if let Some(args_b64) = actions
                     .get(0)
@@ -1381,6 +1421,24 @@ impl ProposalType for PaymentInfo {
     fn category_name() -> &'static str {
         "payments"
     }
+}
+
+struct BulkPaymentDescriptionInfo {
+    contract: String,
+    amount: String,
+}
+
+/// Parse bulk payment info from proposal description
+fn parse_bulk_payment_description(description: &str) -> Option<BulkPaymentDescriptionInfo> {
+    // Check if this is a bulk payment proposal
+    if extract_from_description(description, "proposal_action")? != "bulk-payment" {
+        return None;
+    }
+
+    let contract = extract_from_description(description, "contract").unwrap_or_default();
+    let amount = extract_from_description(description, "amount")?;
+
+    Some(BulkPaymentDescriptionInfo { contract, amount })
 }
 
 impl ProposalType for LockupInfo {
