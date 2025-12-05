@@ -1149,7 +1149,7 @@ pub struct StakeDelegationInfo {
     pub validator: String,
 }
 
-const BULK_PAYMENT_CONTRACT: &str = "bulk-payment.near";
+const BULK_PAYMENT_CONTRACT: &str = "bulkpayment.near";
 
 impl ProposalType for PaymentInfo {
     fn from_proposal(proposal: &Proposal) -> Option<Self> {
@@ -1212,18 +1212,6 @@ impl ProposalType for PaymentInfo {
                     }
                 }
 
-                // ft_transfer_call for FT bulk payments
-                if method_name == "ft_transfer_call" {
-                    if let Some(bulk_info) = parse_bulk_payment_description(&proposal.description) {
-                        return Some(PaymentInfo {
-                            receiver: BULK_PAYMENT_CONTRACT.to_string(),
-                            token: bulk_info.contract,
-                            amount: bulk_info.amount,
-                            is_lockup: false,
-                        });
-                    }
-                }
-
                 // buy_storage to bulk payment contract
                 if method_name == "buy_storage" {
                     let deposit = actions
@@ -1239,6 +1227,42 @@ impl ProposalType for PaymentInfo {
                         amount: deposit,
                         is_lockup: false,
                     });
+                }
+            }
+
+            // FT Bulk Payment: ft_transfer_call to token contract with bulkpayment.near as receiver in args
+            // Need to iterate through all actions since ft_transfer_call might not be the first action
+            for action in actions {
+                if let Some(action_method) = action.get("method_name").and_then(|m| m.as_str()) {
+                    if action_method == "ft_transfer_call" {
+                        if let Some(args_b64) = action.get("args").and_then(|a| a.as_str()) {
+                            if let Ok(decoded_bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(args_b64)
+                            {
+                                if let Ok(json_args) =
+                                    serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
+                                {
+                                    // Check if this is a bulk payment (receiver_id in args is bulkpayment.near)
+                                    if let Some(args_receiver) =
+                                        json_args.get("receiver_id").and_then(|v| v.as_str())
+                                    {
+                                        if args_receiver == BULK_PAYMENT_CONTRACT {
+                                            if let Some(bulk_info) = parse_bulk_payment_description(
+                                                &proposal.description,
+                                            ) {
+                                                return Some(PaymentInfo {
+                                                    receiver: BULK_PAYMENT_CONTRACT.to_string(),
+                                                    token: receiver_id.to_string(), // The token contract
+                                                    amount: bulk_info.amount,
+                                                    is_lockup: false,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1431,7 +1455,7 @@ struct BulkPaymentDescriptionInfo {
 /// Parse bulk payment info from proposal description
 fn parse_bulk_payment_description(description: &str) -> Option<BulkPaymentDescriptionInfo> {
     // Check if this is a bulk payment proposal
-    if extract_from_description(description, "proposal_action")? != "bulk-payment" {
+    if extract_from_description(description, "Proposal Action")? != "bulk-payment" {
         return None;
     }
 
