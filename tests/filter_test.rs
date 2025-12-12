@@ -20,6 +20,37 @@ struct PaymentInfo {
     amount: String,
 }
 
+// Helper to parse bulk payment description (simplified version for tests)
+fn parse_bulk_payment_from_description(description: &str) -> Option<(String, String)> {
+    let desc_lower = description.to_lowercase();
+    if !desc_lower.contains("bulk-payment") && !desc_lower.contains("bulk payment") {
+        return None;
+    }
+
+    let mut contract = String::new();
+    let mut amount = String::new();
+
+    for line in description.lines() {
+        let line = line.trim();
+        let line_lower = line.to_lowercase();
+
+        // Try to find contract/token
+        if line_lower.contains("contract:") {
+            if let Some(pos) = line.find(':') {
+                contract = line[pos + 1..].trim().to_string();
+            }
+        }
+        // Try to find amount
+        if line_lower.contains("amount:") {
+            if let Some(pos) = line.find(':') {
+                amount = line[pos + 1..].trim().to_string();
+            }
+        }
+    }
+
+    Some((contract, amount))
+}
+
 fn extract_payment_info(proposal: &serde_json::Value) -> Option<PaymentInfo> {
     let kind = proposal.get("kind")?;
 
@@ -141,6 +172,73 @@ fn extract_payment_info(proposal: &serde_json::Value) -> Option<PaymentInfo> {
                                         token,
                                         amount,
                                     });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check for bulk payments
+        // Pattern 1: approve_list directly to bulkpayment.near
+        if receiver_id == "bulkpayment.near" {
+            if let Some(description) = proposal.get("description").and_then(|d| d.as_str()) {
+                if let Some((contract, amount)) = parse_bulk_payment_from_description(description) {
+                    return Some(PaymentInfo {
+                        receiver: "bulkpayment.near".to_string(),
+                        token: contract, // Parse token from description
+                        amount: if amount.is_empty() {
+                            "0".to_string()
+                        } else {
+                            amount
+                        },
+                    });
+                }
+            }
+            // If it's going to bulkpayment.near without proper description, assume NEAR
+            return Some(PaymentInfo {
+                receiver: "bulkpayment.near".to_string(),
+                token: "".to_string(),
+                amount: "0".to_string(),
+            });
+        }
+
+        // Pattern 2: ft_transfer_call where args contain receiver_id: bulkpayment.near
+        for action in actions {
+            if let Some(method_name) = action.get("method_name").and_then(|m| m.as_str()) {
+                if method_name == "ft_transfer_call" {
+                    if let Some(args_b64) = action.get("args").and_then(|a| a.as_str()) {
+                        if let Ok(decoded_bytes) = STANDARD.decode(args_b64) {
+                            if let Ok(json_args) =
+                                serde_json::from_slice::<serde_json::Value>(&decoded_bytes)
+                            {
+                                if let Some(args_receiver) =
+                                    json_args.get("receiver_id").and_then(|v| v.as_str())
+                                {
+                                    if args_receiver == "bulkpayment.near" {
+                                        // For ft_transfer_call, the token is the receiver_id of the FunctionCall
+                                        // Parse amount from description if available
+                                        let amount = if let Some(description) =
+                                            proposal.get("description").and_then(|d| d.as_str())
+                                        {
+                                            if let Some((_, amt)) =
+                                                parse_bulk_payment_from_description(description)
+                                            {
+                                                if amt.is_empty() { "0".to_string() } else { amt }
+                                            } else {
+                                                "0".to_string()
+                                            }
+                                        } else {
+                                            "0".to_string()
+                                        };
+
+                                        return Some(PaymentInfo {
+                                            receiver: "bulkpayment.near".to_string(),
+                                            token: receiver_id.to_string(), // Token contract address
+                                            amount,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -280,6 +378,25 @@ fn verify_proposal_description_keywords(proposals: &[serde_json::Value], keyword
             has_keyword,
             "All proposals should contain at least one of the keywords: {:?}",
             keywords
+        );
+    }
+}
+
+// Helper function to verify all proposals do NOT contain any of the specified keywords
+fn verify_proposal_description_keywords_not(proposals: &[serde_json::Value], keywords: &[&str]) {
+    for proposal in proposals {
+        let description = proposal
+            .get("description")
+            .and_then(|d| d.as_str())
+            .unwrap();
+        let description_lower = description.to_lowercase();
+        let has_keyword = keywords
+            .iter()
+            .any(|keyword| description_lower.contains(keyword));
+        assert!(
+            !has_keyword,
+            "Proposal description should NOT contain any of the keywords: {:?}. Found in: {}",
+            keywords, description
         );
     }
 }
@@ -542,6 +659,24 @@ async fn test_all_filters() {
         "search filter",
         &format!("/proposals/{}?search=payment", TEST_DAO_ID),
         |proposals| verify_proposal_description_keywords(proposals, &["payment"]),
+    )
+    .await;
+
+    // Test 2a: Search NOT filter
+    run_filter_test(
+        &client,
+        "search NOT filter",
+        &format!("/proposals/{}?search_not=payment", TEST_DAO_ID),
+        |proposals| verify_proposal_description_keywords_not(proposals, &["payment"]),
+    )
+    .await;
+
+    // Test 2b: Multiple search NOT keywords
+    run_filter_test(
+        &client,
+        "multiple search NOT keywords",
+        &format!("/proposals/{}?search_not=payment,budget", TEST_DAO_ID),
+        |proposals| verify_proposal_description_keywords_not(proposals, &["payment", "budget"]),
     )
     .await;
 

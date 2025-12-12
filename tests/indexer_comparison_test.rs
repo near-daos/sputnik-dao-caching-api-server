@@ -1,3 +1,4 @@
+use base64::Engine;
 use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_client::methods::query::RpcQueryRequest;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
@@ -46,13 +47,51 @@ fn check_for_transfer_proposals(item: &Proposal) -> bool {
 
     // Check for ft_withdraw or ft_transfer method calls
     if let Some(function_call) = item.kind.get("FunctionCall") {
+        let receiver_id = function_call
+            .get("receiver_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
         if let Some(actions) = function_call.get("actions") {
             if let Some(actions_array) = actions.as_array() {
                 for action in actions_array {
                     if let Some(method_name) = action.get("method_name") {
                         let method = method_name.as_str().unwrap_or("");
+
+                        // Exclude buy_storage from payments
+                        if method == "buy_storage" {
+                            continue;
+                        }
+
+                        // Check for bulk payments - receiver_id is bulkpayment.near
+                        if receiver_id == "bulkpayment.near" {
+                            return true; // Calls to bulkpayment.near (except buy_storage) are bulk payments
+                        }
+
                         if method == "ft_withdraw" || method == "ft_transfer" {
                             return true;
+                        }
+
+                        // Check for bulk payment via ft_transfer_call
+                        if method == "ft_transfer_call" {
+                            // Check if args contain bulkpayment.near as receiver
+                            if let Some(args_b64) = action.get("args").and_then(|a| a.as_str()) {
+                                if let Ok(decoded) =
+                                    base64::engine::general_purpose::STANDARD.decode(args_b64)
+                                {
+                                    if let Ok(args_json) = serde_json::from_slice::<Value>(&decoded)
+                                    {
+                                        if let Some(args_receiver) =
+                                            args_json.get("receiver_id").and_then(|v| v.as_str())
+                                        {
+                                            if args_receiver == "bulkpayment.near" {
+                                                // Any ft_transfer_call to bulkpayment.near is a bulk payment
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
