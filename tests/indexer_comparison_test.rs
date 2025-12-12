@@ -52,16 +52,22 @@ fn check_for_transfer_proposals(item: &Proposal) -> bool {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        // Check for bulk payments - receiver_id is bulkpayment.near
-        if receiver_id == "bulkpayment.near" {
-            return true; // Any call to bulkpayment.near is a bulk payment
-        }
-
         if let Some(actions) = function_call.get("actions") {
             if let Some(actions_array) = actions.as_array() {
                 for action in actions_array {
                     if let Some(method_name) = action.get("method_name") {
                         let method = method_name.as_str().unwrap_or("");
+
+                        // Exclude buy_storage from payments
+                        if method == "buy_storage" {
+                            continue;
+                        }
+
+                        // Check for bulk payments - receiver_id is bulkpayment.near
+                        if receiver_id == "bulkpayment.near" {
+                            return true; // Calls to bulkpayment.near (except buy_storage) are bulk payments
+                        }
+
                         if method == "ft_withdraw" || method == "ft_transfer" {
                             return true;
                         }

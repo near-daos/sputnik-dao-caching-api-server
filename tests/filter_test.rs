@@ -181,7 +181,7 @@ fn extract_payment_info(proposal: &serde_json::Value) -> Option<PaymentInfo> {
         }
 
         // Check for bulk payments
-        // Pattern 1: approve_list or buy_storage directly to bulkpayment.near
+        // Pattern 1: approve_list directly to bulkpayment.near
         if receiver_id == "bulkpayment.near" {
             if let Some(description) = proposal.get("description").and_then(|d| d.as_str()) {
                 if let Some((contract, amount)) = parse_bulk_payment_from_description(description) {

@@ -1211,23 +1211,6 @@ impl ProposalType for PaymentInfo {
                         });
                     }
                 }
-
-                // buy_storage to bulk payment contract
-                if method_name == "buy_storage" {
-                    let deposit = actions
-                        .get(0)
-                        .and_then(|a| a.get("deposit"))
-                        .and_then(|d| d.as_str())
-                        .unwrap_or("0")
-                        .to_string();
-
-                    return Some(PaymentInfo {
-                        receiver: BULK_PAYMENT_CONTRACT.to_string(),
-                        token: String::new(), // NEAR
-                        amount: deposit,
-                        is_lockup: false,
-                    });
-                }
             }
 
             // FT Bulk Payment: ft_transfer_call to token contract with bulkpayment.near as receiver in args
