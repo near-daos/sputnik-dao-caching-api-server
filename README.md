@@ -126,6 +126,15 @@ Retrieves a list of proposals for a specific DAO with optional filtering and sor
 - `created_date_to` - Filter proposals created until this date (inclusive)
   - Format: `YYYY-MM-DD` (e.g., `2024-12-31`)
   - Example: `created_date_to=2024-12-31`
+- `created_date_from_not` - Exclude proposals created from this date (inclusive)
+  - Format: `YYYY-MM-DD` (e.g., `2024-01-15`)
+  - Example: `created_date_from_not=2024-01-15` (excludes proposals on or after this date)
+  - Can be used alone or with `created_date_to_not` to exclude a date range
+- `created_date_to_not` - Exclude proposals created until this date (inclusive)
+  - Format: `YYYY-MM-DD` (e.g., `2024-12-31`)
+  - Example: `created_date_to_not=2024-12-31` (excludes proposals on or before this date)
+  - Can be used alone or with `created_date_from_not` to exclude a date range
+  - Example combined: `created_date_from_not=2024-06-01&created_date_to_not=2024-08-31` (excludes proposals between June 1 and August 31, 2024)
 
 **Pagination:**
 

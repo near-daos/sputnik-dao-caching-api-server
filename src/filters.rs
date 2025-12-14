@@ -12,16 +12,54 @@ use std::sync::Arc;
 
 // Helper function to convert human-readable amount to smallest unit
 fn convert_to_smallest_unit(amount: &str, decimals: u8) -> Option<u128> {
-    amount
-        .parse::<f64>()
-        .ok()
-        .map(|v| (v * 10f64.powi(decimals as i32)) as u128)
+    // Trim whitespace and newlines from the input
+    let amount = amount.trim();
+
+    // Parse the amount string, handling both integers and decimals
+    let parts: Vec<&str> = amount.split('.').collect();
+
+    match parts.len() {
+        1 => {
+            // Integer amount (e.g., "1", "100")
+            let integer_part = parts[0].parse::<u128>().ok()?;
+            // Multiply by 10^decimals
+            integer_part.checked_mul(10u128.pow(decimals as u32))
+        }
+        2 => {
+            // Decimal amount (e.g., "1.5", "0.25")
+            let integer_part = if parts[0].is_empty() {
+                0u128
+            } else {
+                parts[0].parse::<u128>().ok()?
+            };
+
+            let decimal_part = parts[1];
+            let decimal_places = decimal_part.len() as u32;
+
+            if decimal_places > decimals as u32 {
+                // Too many decimal places
+                return None;
+            }
+
+            let decimal_value = decimal_part.parse::<u128>().ok()?;
+
+            // Calculate: integer_part * 10^decimals + decimal_value * 10^(decimals - decimal_places)
+            let integer_scaled = integer_part.checked_mul(10u128.pow(decimals as u32))?;
+            let decimal_scaled =
+                decimal_value.checked_mul(10u128.pow(decimals as u32 - decimal_places))?;
+
+            integer_scaled.checked_add(decimal_scaled)
+        }
+        _ => None,
+    }
 }
 
 // Helper function to parse date string "2024-09-10" to timestamp
 fn parse_date_to_timestamp(date_str: &str) -> Result<u64, Box<dyn std::error::Error>> {
     use chrono::{NaiveDate, TimeZone, Utc};
 
+    // Trim whitespace and newlines
+    let date_str = date_str.trim();
     let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")?;
     let datetime = date.and_hms_opt(0, 0, 0).unwrap();
     let utc_datetime = Utc.from_utc_datetime(&datetime);
@@ -77,6 +115,8 @@ pub struct ProposalFilters {
     pub category: Option<String>,
     pub created_date_from: Option<String>,
     pub created_date_to: Option<String>,
+    pub created_date_from_not: Option<String>, // exclude proposals created from this date
+    pub created_date_to_not: Option<String>,   // exclude proposals created until this date
 
     pub amount_min: Option<String>,
     pub amount_max: Option<String>,
@@ -188,6 +228,14 @@ impl ProposalFilters {
             .created_date_to
             .as_ref()
             .and_then(|d| parse_date_to_timestamp(d).ok());
+        let from_timestamp_not = self
+            .created_date_from_not
+            .as_ref()
+            .and_then(|d| parse_date_to_timestamp(d).ok());
+        let to_timestamp_not = self
+            .created_date_to_not
+            .as_ref()
+            .and_then(|d| parse_date_to_timestamp(d).ok());
 
         let mut filtered_proposals = Vec::with_capacity(proposals.len());
 
@@ -231,6 +279,26 @@ impl ProposalFilters {
             }
             if let Some(to_ts) = to_timestamp {
                 if submission_time > to_ts {
+                    continue;
+                }
+            }
+
+            // NOT date filters - exclude proposals within this range
+            if let Some(from_ts_not) = from_timestamp_not {
+                if let Some(to_ts_not) = to_timestamp_not {
+                    // Both NOT filters specified - exclude if within range
+                    if submission_time >= from_ts_not && submission_time <= to_ts_not {
+                        continue;
+                    }
+                } else {
+                    // Only from_not specified - exclude if on or after this date
+                    if submission_time >= from_ts_not {
+                        continue;
+                    }
+                }
+            } else if let Some(to_ts_not) = to_timestamp_not {
+                // Only to_not specified - exclude if on or before this date
+                if submission_time <= to_ts_not {
                     continue;
                 }
             }
